@@ -100,15 +100,43 @@ Invoke as `/claudex-loop`, `/codex-review`, `/codex-build`. Update by `git pull`
 
 ## Prerequisites
 
-- **Codex CLI ≥ 0.130** — `npm install -g @openai/codex@latest`
+- **Codex CLI ≥ 0.130** *(recommended — this is the default reviewer)* — `npm install -g @openai/codex@latest`
 - **Authenticated** — `codex login` once (any ChatGPT account: Free/Plus/Pro/Max)
 - **Don't pin a model** — ChatGPT-account auth rejects `gpt-5.x-codex` variants; the skills use your config default and echo the active model at kickoff so you can veto before a round burns
+
+No Codex? The loop still runs — see below.
+
+### No Codex?
+
+`claudex-loop` and `codex-review` probe both providers before they ask you anything. If the Codex
+CLI is missing, older than 0.130, or logged out, Phase 2 falls back to a **separate isolated Claude
+session** as the reviewer, and tells you so up front:
+
+> Codex unavailable (<sanitized reason>). Falling back to Claude-only review: a separate
+> `claude -p` session, restricted to Read/Grep/Glob, reviews your plan.
+> **Kept:** a reviewer with no inherited primary-session context — no CLAUDE.md, no user/project
+> custom hooks, no output styles, plugins, or MCP (managed enterprise settings may still apply) —
+> plus its own cross-round memory of this review, the VERDICT gate, MAX_ROUNDS, and Claude as
+> final arbiter.
+> **Lost:** cross-provider blind-spot decorrelation. Same-family models have correlated systematic
+> blind spots — they favour the same architectures and miss the same edge cases. The read-only
+> guarantee is also weaker: tool-level restriction, not Codex's OS-level filesystem sandbox.
+> This is a downgrade path, not a peer option. Full effect:
+> `npm i -g @openai/codex && codex login`.
+
+Force either reviewer with `reviewer=codex` or `reviewer=claude`. An override is a preference, not
+a capability claim — forcing a reviewer that can't run stops with the probe error rather than
+silently degrading. Choosing `reviewer=claude` does *not* disable `/codex-build`; reviewer and
+builder are independent.
 
 ## Tunables
 
 | Skill | Var | Default | Meaning |
 |-------|-----|---------|---------|
 | `claudex-loop` | `research` | ask | `none` / `web` / `deep` — pre-answers the Phase 0 research gate |
+| review skills | `reviewer` | auto-detect | `codex` / `claude` — force a reviewer instead of probing |
+| review skills | `REVIEWER_MODEL` | `opus` | Reviewer model on the Claude fallback path |
+| review skills | `REVIEWER_EFFORT` | `high` | Reviewer reasons longer than the planner did |
 | review skills | `MAX_ROUNDS` | `5` | Hard cap on review rounds |
 | review skills | `PLAN_FILE` | `PLAN.md` | Where the plan lives |
 | all | `LOG_FILE` | `PLAN-REVIEW-LOG.md` | The argument transcript |
@@ -121,6 +149,8 @@ Pass e.g. `rounds=3` when invoking to override.
 ## Safety
 
 **Review (Phases 0–2):** Codex runs **read-only every round** — `-s read-only` on the first call, `-c sandbox_mode="read-only"` on every resume (the `resume` subcommand doesn't accept `-s`, and without forcing read-only it would inherit your `config.toml` sandbox default, which may be `danger-full-access`). The skills handle this for you. No code is written until you approve the final plan.
+
+**Review on the Claude fallback path** is read-only too, but by a *weaker* mechanism, and the skills say so rather than claiming parity. The reviewer runs `--restricted --tools "Read,Grep,Glob" --strict-mcp-config --safe-mode --permission-mode dontAsk`, which exposes exactly three tools. An allow/deny list alone is **not** enough: `--allowedTools`/`--disallowedTools` leaves `Agent`, `Workflow`, `ToolSearch` and `WebFetch` live, and `Agent` defeats a denylist outright because a spawned subagent carries its own Write and Bash. Even with the right flags this is tool-level restriction enforced by the Claude Code process — not an OS-enforced read-only mount — and managed enterprise settings still apply.
 
 **`codex-build` (Phase 3)** deliberately inverts this: Codex gets full write access — which is exactly why the skill gates it hard. Clean git tree before launch, Claude reads every line of the diff and runs the proof itself, fix rounds bounded, commits human-gated and Claude-authored. Resume calls need the long flag `--dangerously-bypass-approvals-and-sandbox` (resume has no `--yolo`) — and always resume by explicit `thread_id`, never `--last`.
 

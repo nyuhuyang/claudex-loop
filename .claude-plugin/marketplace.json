@@ -8,7 +8,7 @@
     {
       "name": "claudex-loop",
       "source": "./",
-      "description": "Four-phase plan hardening: recon → interrogate → adversarial Codex review → cross-model build & inspection. Ships /claudex-loop:claudex-loop, /claudex-loop:codex-review, /claudex-loop:codex-build."
+      "description": "Four-phase plan hardening: recon → interrogate → adversarial cross-model review → cross-model build & inspection. Codex is the default reviewer, with an announced fallback to an isolated read-only Claude reviewer when Codex is unavailable. Ships /claudex-loop:claudex-loop, /claudex-loop:codex-review, /claudex-loop:codex-build."
     }
   ]
 }

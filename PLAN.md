@@ -286,7 +286,10 @@ Per round, in order:
    never looks like a completed round:
    - strip trailing blank lines; the last non-empty line must match exactly
      `^VERDICT: (APPROVED|REVISE)$`
-   - the token `VERDICT:` must appear exactly once in the whole reply
+   - the **anchored line pattern** `^VERDICT: (APPROVED|REVISE)$` must match exactly once. Do NOT
+     count the bare substring `VERDICT:` — corrected during the build after a live proof run:
+     a valid Claude review that quoted the instruction back contained 3 substring hits and would
+     have been wrongly flagged malformed (observed 2026-08-31).
    - violation -> repair is permitted **only if the review launch already produced a substantive
      review**:
      non-trivial length, concrete findings or explicit conclusions, and — on the Claude path —

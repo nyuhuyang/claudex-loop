@@ -329,3 +329,71 @@ Convergence: 15 -> 9 -> 6 -> 6 -> 0. Twenty-one findings accepted outright, one 
 rejected on verified evidence, three of Codex's proposed fixes replaced with simpler substitutions
 it subsequently attacked and cleared, and one scope demand (rewriting the README hero, mermaid,
 phase table, and invariant) rejected twice on the user's explicit Q4 decision.
+
+---
+
+## Act 3 — Build (Claude built, cross-inspected)
+
+Builder: Claude. Base commit `42b22aa` (clean tree). Build commit `64d4699` — 5 files,
++654/-97. Spec deviations and beyond-spec fixes recorded below.
+
+### Proof matrix executed
+
+| Row | Case | Result |
+|---|---|---|
+| 1 | Claude Round 1 against `PLAN.md` | PASS — exit 0, 4479-byte substantive coverage review, last line matched the verdict regex exactly |
+| 2 | Round 2 resume, same SID | PASS — recalled its `--no-renames` finding verbatim |
+| 3 | Reviewer tool inventory | PASS — exactly Glob, Grep, Read |
+| 4 | Write attempt in reviewer session | PASS — refused, no file created |
+| 5 | `PATH` masked so codex absent | PASS — exit 127 masked / 0 unmasked |
+| 8 | Override validation specified | PASS — both skills |
+| 11 | Symlink at a fixed `/tmp` path | PASS — not followed, writes stayed in RUN_DIR |
+| 13 | Untracked file in manifest | PASS |
+| 14 | Downgrade template identical x3 | PASS — same SHA after whitespace normalisation |
+| 21 | Clean-tree gate on dirty worktree | PASS — gate stops |
+| 23 | No PLAN/LOG hunk in build delta | PASS (isolated repo) |
+| 24 | Binary file | PASS — "Binary files differ", no inlined blob |
+
+Counter-tests confirming the bugs the fixes remove: `git diff BASE..HEAD` returned **0 bytes**
+where `git diff BASE --` returned 126; and writing `BASE_COMMIT` into the log before capture
+**did** put a log hunk in the delta. Not run: rows 6, 9, 10, 12, 15a/b, 16, 17, 18, 19, 20, 22,
+25-30 — they need shims (fake codex, hostile filenames, tampered log, concurrent loops). Logged
+as untested per the scoping decision.
+
+### Beyond-spec fixes found by the live proof run
+
+Running the new Claude reviewer against `PLAN.md` found six defects in the mechanism itself:
+
+1. **Verdict counting was wrong** — the spec's "`VERDICT:` exactly once" rule would have flagged
+   the proof run's own valid review as malformed (3 substring hits from quoting the instruction).
+   Changed to an anchored line pattern. `PLAN.md` corrected in a follow-up commit.
+2. **Quota exhaustion** is a failure class the spec never named, and its reason arrives on
+   **stdout** (Claude) or the **events stream** (Codex), not stderr — so "sanitized first line of
+   stderr" would have logged nothing. Both observed live: opus hit its spend limit mid-proof, and
+   Codex hit its usage limit during reinspection.
+3. `--no-renames` missing from evidence commands (renames misalign `--numstat` fields).
+4. Clean-tree gate is check-then-act with no lock.
+5. Three missing failure-transition rows (fallback-also-fails, repair-launch failure, missing
+   `-status.txt`).
+6. `<reason>` sanitization must be redaction, not truncation — a first line bounds length, not
+   sensitivity.
+
+### Cross-inspection
+
+Codex round 1 returned 9 findings, all accepted: prompt files referenced but never written;
+`PLAN_FILE` not propagated to the build handoff; three contradictions in the Phase 3 sequence
+(cleanup-before-Phase-3, "implement directly" ordered before the gate, and a "no repository
+write" rule that forbade the build itself); timeouts saying "stop" while the table said retry;
+logging still sourcing stderr only; `codex-review` control text still asserting Codex after
+selecting Claude; the downgrade template drifting across its three copies; an out-of-scope edit
+to the protected invariant line; and a duplicated block I introduced by double-patching.
+
+Codex round 2 failed on its usage limit. **The new transition table was applied as written** —
+first inspector failure falls back to a fresh restricted Claude inspector — which found 4 more:
+`codex-review` had adopted none of the `PLAN_FILE` handoff fix, its Rounds 2..MAX blocks wrote
+`resume-prompt.txt` and then never read it (so the coverage addendum never reached a fallback
+reviewer from round 2 on), its transition table was missing the Round >= 2 STOP row, and
+`PLAN.md` still carried the old verdict rule. All fixed; skill parity verified by grep.
+
+Both inspection rounds spent (`MAX_INSPECTION_ROUNDS=2`). The second ran on the Claude fallback,
+which is a weaker inspector than Codex — stated rather than glossed.

@@ -40,6 +40,16 @@ Determine `TIMEOUT_MODE` once and carry it as a literal: `timeout` -> prefix `ti
 else `gtimeout` -> `gtimeout 600 `; else `host` -> **no prefix**, pass `timeout: 600000` on the
 Bash tool call. Never splice a possibly-empty variable — an empty prefix runs `600` as the command.
 
+**Forced selection is not a downgrade-due-to-unavailability.** When `reviewer=claude` is given
+while `CODEX_CAPABLE` is true, do NOT print the "Codex unavailable" notice — it would be false and
+its `<reason>` would be empty. Print instead:
+
+> Reviewer: Claude (you asked for it; Codex is available). Same trade-off as the fallback path —
+> you keep the fresh-context reviewer and lose cross-provider blind-spot decorrelation, and the
+> read-only guarantee is tool-level rather than an OS sandbox. Drop `reviewer=claude` to use Codex.
+
+The "Codex unavailable" notice is reserved for the case where Codex genuinely is not capable.
+
 **Downgrade notice** (identical wording in the Round-1 fallback log line and the README):
 
 > Codex unavailable (<sanitized reason>). Falling back to Claude-only review: a separate

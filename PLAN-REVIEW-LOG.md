@@ -397,3 +397,54 @@ reviewer from round 2 on), its transition table was missing the Round >= 2 STOP 
 
 Both inspection rounds spent (`MAX_INSPECTION_ROUNDS=2`). The second ran on the Claude fallback,
 which is a weaker inspector than Codex — stated rather than glossed.
+
+## Act 3b — Branch-selection test (requested by the user)
+
+Two layers tested: the probe logic against shimmed `codex` binaries, and whether a model *reading
+the skill* actually picks the right branch. The second layer is the one that matters — the skill is
+prose, so the real failure mode is a model grabbing the wrong command block.
+
+### Layer 1 — probe logic (shims: absent / v0.120.3 / logged-out / passes-probe-then-fails-exec)
+
+| Scenario | Result |
+|---|---|
+| Both capable | `REVIEWER_SELECTION=codex`, no notice |
+| Codex absent (claude on PATH) | `claude` + notice "CLI absent" |
+| Codex v0.120.3 (< 0.130) | `claude` + notice "version 0.120.3 < 0.130" |
+| Codex logged out | `claude` + notice "not authenticated" |
+| `reviewer=codex` forced, codex absent | STOP, exit 2 |
+| `reviewer=bogus` | ERROR, exit 3 — does not default |
+| Codex absent at probe 1, present at probe 2 (auto) | reselects `codex` |
+| Same, `reviewer=claude` forced | stays `claude` |
+
+### Layer 2 — model reading the skill (fresh restricted sessions, expected answer not hinted)
+
+| Scenario | Selection | Block chosen | First binary |
+|---|---|---|---|
+| Both capable | codex | `Round 1 — REVIEWER_SELECTION=codex` | `codex` |
+| Codex absent | claude | `Round 1 — REVIEWER_SELECTION=claude` | `claude` |
+| Codex v0.120.3 | claude | `...=claude` | `claude` |
+| Both capable, `reviewer=claude` | claude | `...=claude` | `claude` |
+| Codex absent, `reviewer=codex` | STOP | NONE | NONE |
+
+`codex-review` tested separately (it had drifted): both-capable picks codex, codex-absent picks
+claude, and both branches source Rounds 2..MAX from `"$(cat <RUN_DIR>/resume-prompt.txt)"` —
+confirming the round-2 inspection fix landed.
+
+Five for five on each skill. The "two adjacent bash blocks, wrong one picked" risk did not
+materialise in any scenario; the hard-conditioned block titles appear to carry the weight.
+
+### Defect found and fixed by this test
+
+`reviewer=claude` with Codex fully capable printed **"Codex unavailable ()."** — a false statement
+with an empty reason. The skill only ever specified the notice for genuine unavailability and said
+nothing about a forced selection. Both skills now distinguish the two: forced Claude prints
+"Reviewer: Claude (you asked for it; Codex is available)" with the same trade-off disclosure, and
+the "Codex unavailable" notice is reserved for actual incapability. Re-tested: scenario S4 now
+prints the forced-selection wording.
+
+Acceptance rows 5, 7, 8, 25, 26 are now executed rather than logged as untested.
+
+Aside worth recording: while writing this harness I hit the masked-exit-status bug twice —
+`cmd | head` reporting `head`'s status — which is exactly the defect Codex flagged in round 2 and
+the reason the skill now forbids pipelines around reviewer launches.

@@ -66,6 +66,16 @@ Also determine the portability mode once and carry the result as a literal:
 - `NOUUID` -> the Claude branch is unavailable; if it was selected, STOP with
   "no UUID source; set reviewer=codex or install uuidgen/python3".
 
+**Forced selection is not a downgrade-due-to-unavailability.** When `reviewer=claude` is given
+while `CODEX_CAPABLE` is true, do NOT print the "Codex unavailable" notice — it would be false and
+its `<reason>` would be empty. Print instead:
+
+> Reviewer: Claude (you asked for it; Codex is available). Same trade-off as the fallback path —
+> you keep the fresh-context reviewer and lose cross-provider blind-spot decorrelation, and the
+> read-only guarantee is tool-level rather than an OS sandbox. Drop `reviewer=claude` to use Codex.
+
+The "Codex unavailable" notice is reserved for the case where Codex genuinely is not capable.
+
 **The downgrade notice** (identical wording in the Round-1 fallback log line and README):
 
 > Codex unavailable (<sanitized reason>). Falling back to Claude-only review: a separate

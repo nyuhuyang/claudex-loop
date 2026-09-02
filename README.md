@@ -4,7 +4,11 @@
 
 ### Two AI models harden your plan before a line of code exists — then swap jobs to build it.
 
-[![Stars](https://img.shields.io/github/stars/chaseai-yt/claudex-loop?style=flat&color=e8590c)](https://github.com/chaseai-yt/claudex-loop/stargazers)
+**Fork of [chaseai-yt/claudex-loop](https://github.com/chaseai-yt/claudex-loop)** — adds a
+Claude-only reviewer fallback so the loop still runs without the OpenAI Codex CLI.
+[What's different →](#whats-different-in-this-fork)
+
+[![Stars](https://img.shields.io/github/stars/nyuhuyang/claudex-loop?style=flat&color=e8590c)](https://github.com/nyuhuyang/claudex-loop/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Claude Code](https://img.shields.io/badge/Claude_Code-skill%20%2B%20plugin-d97757)](https://docs.anthropic.com/en/docs/claude-code)
 [![Codex](https://img.shields.io/badge/OpenAI_Codex-adversarial_reviewer-10a37f)](https://github.com/openai/codex)
@@ -76,17 +80,32 @@ From the first end-to-end greenfield run (a solo-creator CRM):
 ### Option A — Plugin *(recommended: updates flow automatically)*
 
 ```
-/plugin marketplace add chaseai-yt/claudex-loop
+/plugin marketplace add nyuhuyang/claudex-loop
 /plugin install claudex-loop@claudex-loop
 ```
 
 Skills arrive namespaced: `/claudex-loop:claudex-loop`, `/claudex-loop:codex-review`, `/claudex-loop:codex-build`. (Intent triggering works regardless — say "claudex this plan" or even the legacy "crucible this plan" and the right skill fires.) Enable auto-update for the marketplace in the `/plugin` menu and new versions pull in on their own.
 
-> **Installed back when this was `crucible`?** Your existing marketplace source keeps working (GitHub redirects), but the plugin name changed — re-add with the commands above to pick up the new namespace.
+Or from a shell, without starting a session:
+
+```bash
+claude plugin marketplace add nyuhuyang/claudex-loop
+claude plugin install claudex-loop@claudex-loop
+```
+
+> **Already have upstream installed?** Both marketplaces declare the name `claudex-loop`, so they
+> collide. Remove the old one first: `claude plugin marketplace remove claudex-loop`, then add this
+> one. To go back, re-add `chaseai-yt/claudex-loop` the same way.
+
+> **There is no `npx` install.** This repo ships markdown skills and `.claude-plugin/` manifests —
+> no `package.json`, no `bin`. `npx nyuhuyang/claudex-loop` has nothing to execute. Use the plugin
+> commands above, or Option B.
 
 ### Option B — Manual copy *(bare skill names)*
 
 ```bash
+git clone https://github.com/nyuhuyang/claudex-loop && cd claudex-loop
+
 # macOS / Linux
 cp -r skills/* ~/.claude/skills/
 
@@ -154,8 +173,70 @@ Pass e.g. `rounds=3` when invoking to override.
 
 **`codex-build` (Phase 3)** deliberately inverts this: Codex gets full write access — which is exactly why the skill gates it hard. Clean git tree before launch, Claude reads every line of the diff and runs the proof itself, fix rounds bounded, commits human-gated and Claude-authored. Resume calls need the long flag `--dangerously-bypass-approvals-and-sandbox` (resume has no `--yolo`) — and always resume by explicit `thread_id`, never `--last`.
 
+## What's different in this fork
+
+Upstream requires the OpenAI Codex CLI. If you don't have it — no ChatGPT account, corporate
+policy, or just not installed — Phase 2 could not run at all. This fork adds an announced fallback
+to a second, isolated Claude session as the adversarial reviewer.
+
+**The reviewer is still Codex by default.** Nothing changes when Codex is present.
+
+| | Upstream | This fork |
+|---|---|---|
+| Codex present | Phase 2 runs | identical, unchanged |
+| Codex missing / < 0.130 / logged out | dead end | falls back to an isolated read-only Claude reviewer, and says what that costs |
+| Reviewer choice | implicit | `reviewer=codex\|claude` — a preference, never a capability claim |
+
+### What the fallback keeps, and what it loses
+
+**Keeps:** a reviewer with no inherited primary-session context — no `CLAUDE.md`, no user/project
+hooks, no output styles, plugins, or MCP — plus its own cross-round memory, the VERDICT gate,
+`MAX_ROUNDS`, and Claude as final arbiter.
+
+**Loses:** cross-provider blind-spot decorrelation. Same-family models have correlated systematic
+blind spots. The read-only guarantee is also weaker — tool-level restriction, not Codex's OS-level
+filesystem sandbox, and managed enterprise settings still apply.
+
+**This is a downgrade path, not a peer option**, and the skill says so at runtime rather than
+letting you assume parity.
+
+### Other fixes this work surfaced
+
+Hardening the fallback exposed bugs on the shared paths too:
+
+- **`git diff BASE..HEAD` in Phase 3 was always empty.** Before the human commit gate `HEAD` still
+  equals the base commit, so the cross-inspection reviewed nothing while reporting success. Now
+  `git diff BASE --` behind a clean-tree gate, with the base held outside the repo.
+- **Reviewer launches were piped into `grep`,** so `$?` was `grep`'s status — a reviewer that died
+  after emitting `thread.started` read as success. Status, stdout, and stderr are now captured
+  separately.
+- **Verdict validation counted the bare substring `VERDICT:`,** which flags a valid review that
+  quotes the instruction back. Now an anchored line match.
+- **Quota exhaustion** was an unhandled failure class, and its reason arrives on stdout or the
+  events stream, not stderr.
+- `--no-renames` on evidence commands, `mktemp -d` instead of fixed `/tmp` paths (symlink + race),
+  exhaustive failure-transition tables, and `PLAN_FILE` actually propagated to the build handoff.
+
+### New tunables
+
+| Var | Default | Meaning |
+|---|---|---|
+| `reviewer` | auto-detect | `codex` / `claude` |
+| `REVIEWER_MODEL` | `opus` | Reviewer model on the Claude path |
+| `REVIEWER_EFFORT` | `high` | Reviewer reasons longer than the planner did |
+
+### How it was built
+
+Through the skill itself. [`PLAN.md`](./PLAN.md) is the locked spec; [`PLAN-REVIEW-LOG.md`](./PLAN-REVIEW-LOG.md)
+is the full argument — five rounds of adversarial Codex review (15 → 9 → 6 → 6 → 0 findings), then a
+Claude build, then two rounds of cross-inspection that found 13 more. Read the log if you want to
+see what the loop actually catches.
+
 ## Credits
 
+- Forked from [chaseai-yt/claudex-loop](https://github.com/chaseai-yt/claudex-loop) — the four-phase
+  loop, the interview redesign, and all original packaging are theirs. This fork adds the
+  Claude-only reviewer path.
 - The [`legacy/`](./legacy/) skills' Act 1 (`grill-me`, `grill-with-docs`) © [Matt Pocock](https://github.com/mattpocock/skills) (MIT) — see their `THIRD-PARTY-NOTICES.md`. Claudex-loop's interview is an original redesign.
 - Phase 3's Codex-as-builder pattern adapted from Peter Steinberger's [`codex-first`](https://github.com/steipete/agent-scripts).
 - Claudex-loop, the iterative cross-model review, and packaging by [Chase AI](https://youtube.com/@chaseai).

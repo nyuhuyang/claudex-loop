@@ -591,8 +591,7 @@ a documented guarantee.
   with empty output.
 - O7. `--model opus --effort high` composes with `-p --safe-mode`.
 - O8. A Claude reviewer refused to emit a `VERDICT:` line for a contentless prompt.
-- O9. `claude auth status` exits 0 with `"loggedIn": true`, `"authMethod": "claude.ai"`,
-  `"subscriptionType": "team"`. (Codex's round-1 finding 2 asserted the opposite; it most
+- O9. `claude auth status` exits 0 with `"loggedIn": true`, `"authMethod": "claude.ai"`. (Codex's round-1 finding 2 asserted the opposite; it most
   likely probed from inside its own sandbox where the keychain was unreadable.)
 - O10. `codex login status` exits 0, printing "Logged in using ChatGPT"; `codex --version`
   prints `codex-cli 0.150.1`.
@@ -615,8 +614,8 @@ a documented guarantee.
 - R6. Phases 0 and 1 carry zero Codex dependency.
 - R7. `userConfig`'s schema shape is UNVERIFIED — no installed plugin declares one.
 - R8. Skill inventory matched `skill-creator` / `write-a-skill` on both benches; none loaded.
-- R9. This machine is on a Team plan (org "Rancho BioSciences"), so managed enterprise
-  settings are a live possibility, not hypothetical.
+- R9. This machine is on a Claude Code Team plan, so managed enterprise settings are a live
+  possibility, not hypothetical.
 
 ## Risks / open questions
 

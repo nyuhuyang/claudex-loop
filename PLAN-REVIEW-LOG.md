@@ -6,7 +6,7 @@ Reviewer: Codex (codex-cli 0.150.1, config model = gpt-5.6-sol, reasoning effort
 
 The plan is not sound enough to implement. Material findings:
 
-1. **Critical — Claude “read-only” is not airtight.** The plan equates an allow/deny list with Codex’s filesystem sandbox ([PLAN.md:75](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:75)). `--safe-mode` disables customizations, not filesystem writes; the denylist omits other command-capable tools, and managed policy settings still apply. One refused `Write` attempt does not prove the invariant claimed in assumption 8.
+1. **Critical — Claude “read-only” is not airtight.** The plan equates an allow/deny list with Codex’s filesystem sandbox ([PLAN.md:75](PLAN.md:75)). `--safe-mode` disables customizations, not filesystem writes; the denylist omits other command-capable tools, and managed policy settings still apply. One refused `Write` attempt does not prove the invariant claimed in assumption 8.
 
    Fix: Use `--restricted --tools "Read,Grep,Glob" --permission-mode dontAsk --strict-mcp-config --safe-mode`, constrain the working directory, and describe this honestly as tool-level protection unless an OS-enforced read-only mount is added.
 
@@ -14,15 +14,15 @@ The plan is not sound enough to implement. Material findings:
 
    Fix: Preflight `claude --version`, required flag support, `claude auth status`, and model availability before selecting or offering the Claude branch.
 
-3. **High — the Codex detector is not executable detection logic.** `codex --version` plus a comment does not parse or compare `codex-cli 0.150.1` against `0.130`, and the plan ignores the available cheap `codex login status` command while calling its existence an open question ([PLAN.md:20](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:20), [PLAN.md:256](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:256)).
+3. **High — the Codex detector is not executable detection logic.** `codex --version` plus a comment does not parse or compare `codex-cli 0.150.1` against `0.130`, and the plan ignores the available cheap `codex login status` command while calling its existence an open question ([PLAN.md:20](PLAN.md:20), [PLAN.md:256](PLAN.md:256)).
 
    Fix: Specify deterministic numeric version parsing, run `codex login status`, validate override values, and retain launch-time handling for expired credentials.
 
-4. **High — detection goes stale and `REVIEWER` conflates preference with capability.** A probe before lengthy Phases 0–1 can be obsolete by Phase 2, and much more so by Phase 3; additionally, forcing `reviewer=claude` incorrectly suppresses `codex-build` even when Codex is fully available ([PLAN.md:111](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:111)).
+4. **High — detection goes stale and `REVIEWER` conflates preference with capability.** A probe before lengthy Phases 0–1 can be obsolete by Phase 2, and much more so by Phase 3; additionally, forcing `reviewer=claude` incorrectly suppresses `codex-build` even when Codex is fully available ([PLAN.md:111](PLAN.md:111)).
 
    Fix: Track `REVIEWER_SELECTION` separately from `CODEX_CAPABLE`, revalidate capability immediately before Phases 2 and 3, and never change an established reviewer session silently.
 
-5. **High — unauthenticated Codex does not actually trigger the promised automatic fallback.** The goal promises an automatic end-to-end fallback ([PLAN.md:6](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:6)), but Round 1 merely “offers” it, while later provider failures stop outright ([PLAN.md:89](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:89)).
+5. **High — unauthenticated Codex does not actually trigger the promised automatic fallback.** The goal promises an automatic end-to-end fallback ([PLAN.md:6](PLAN.md:6)), but Round 1 merely “offers” it, while later provider failures stop outright ([PLAN.md:89](PLAN.md:89)).
 
    Fix: Define exact transitions: auto mode retries Round 1 with Claude without incrementing the round, forced Codex stops, and post-Round-1 provider loss requires an explicitly logged restart because continuity cannot be preserved.
 
@@ -30,7 +30,7 @@ The plan is not sound enough to implement. Material findings:
 
    Fix: Capture Codex stdout, stderr, and its actual exit status separately without a live `grep` pipeline, then parse the saved event stream and surface a sanitized error.
 
-7. **High — fixed `/tmp` filenames create races and a symlink vulnerability.** Concurrent loops overwrite each other, stale Codex output can be mistaken for a new verdict, and `> /tmp/claude-verdict.txt` follows a pre-existing symlink and truncates its target before Claude starts ([PLAN.md:54](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:54)).
+7. **High — fixed `/tmp` filenames create races and a symlink vulnerability.** Concurrent loops overwrite each other, stale Codex output can be mistaken for a new verdict, and `> /tmp/claude-verdict.txt` follows a pre-existing symlink and truncates its target before Claude starts ([PLAN.md:54](PLAN.md:54)).
 
    Fix: Create a private per-run directory with `umask 077` and `mktemp -d`, use round-specific files, validate freshness/non-emptiness, and clean up with a trap.
 
@@ -38,27 +38,27 @@ The plan is not sound enough to implement. Material findings:
 
    Fix: Require exactly one verdict and an exact last non-empty line matching `^VERDICT: (APPROVED|REVISE)$`, allow one format-only repair without consuming a round, and log failed attempts explicitly.
 
-9. **High — the three-finding quota incentivizes hallucinated defects.** A sound plan may not contain three real flaws, so the reviewer is ordered to manufacture findings; the claim that same-family reviewers are more agreeable is also unverified ([PLAN.md:137](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:137)).
+9. **High — the three-finding quota incentivizes hallucinated defects.** A sound plan may not contain three real flaws, so the reviewer is ordered to manufacture findings; the claim that same-family reviewers are more agreeable is also unverified ([PLAN.md:137](PLAN.md:137)).
 
    Fix: Replace the quota with a required coverage checklist and permit zero findings when each area was examined and approval is justified.
 
-10. **High — Phase 3’s Claude reviewer cannot perform the promised diff inspection.** With Bash denied, it cannot run `git status`, `git diff`, or `git show`; merely reading the current tree cannot distinguish the build from the base, and the plan gives no safe transport for large, untracked, or binary diffs ([PLAN.md:105](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:105)).
+10. **High — Phase 3’s Claude reviewer cannot perform the promised diff inspection.** With Bash denied, it cannot run `git status`, `git diff`, or `git show`; merely reading the current tree cannot distinguish the build from the base, and the plan gives no safe transport for large, untracked, or binary diffs ([PLAN.md:105](PLAN.md:105)).
 
    Fix: Have the orchestrator produce a bounded changed-file manifest and diff including untracked files, provide them through a private readable input, and define handling for large and binary changes.
 
-11. **High — `PLAN_FILE` is a fake tunable.** Both existing skills and the proposed resume prompt hardcode `PLAN.md`, while revisions use `PLAN_FILE`; a non-default value therefore reviews one file and edits another ([PLAN.md:65](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:65), [codex-review/SKILL.md:74](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/skills/codex-review/SKILL.md:74)).
+11. **High — `PLAN_FILE` is a fake tunable.** Both existing skills and the proposed resume prompt hardcode `PLAN.md`, while revisions use `PLAN_FILE`; a non-default value therefore reviews one file and edits another ([PLAN.md:65](PLAN.md:65), [codex-review/SKILL.md:74](skills/codex-review/SKILL.md:74)).
 
    Fix: Resolve and quote one plan path at startup and interpolate it into every initial prompt, resume prompt, inspection prompt, log entry, and build handoff.
 
-12. **Medium — the literal timeout regresses current portability guidance.** The new branch uses `timeout 600`, although the existing skill correctly notes that stock macOS has only `gtimeout` when coreutils is installed ([claudex-loop/SKILL.md:202](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/skills/claudex-loop/SKILL.md:202)); the UUID fallback also remains unresolved.
+12. **Medium — the literal timeout regresses current portability guidance.** The new branch uses `timeout 600`, although the existing skill correctly notes that stock macOS has only `gtimeout` when coreutils is installed ([claudex-loop/SKILL.md:202](skills/claudex-loop/SKILL.md:202)); the UUID fallback also remains unresolved.
 
    Fix: Define a portable timeout/UUID preflight and use the host tool-call timeout when neither `timeout` nor `gtimeout` exists.
 
-13. **High — user-facing documentation will remain materially false.** The plan leaves categorical “two models,” “rival model,” and “whoever made it never checks it” claims unchanged ([README.md:5](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/README.md:5), [README.md:58](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/README.md:58)); both skill frontmatters and resolution messages likewise remain Codex-only. “No memory” also contradicts the promised cross-round memory unless qualified as “no inherited primary-session memory.”
+13. **High — user-facing documentation will remain materially false.** The plan leaves categorical “two models,” “rival model,” and “whoever made it never checks it” claims unchanged ([README.md:5](README.md:5), [README.md:58](README.md:58)); both skill frontmatters and resolution messages likewise remain Codex-only. “No memory” also contradicts the promised cross-round memory unless qualified as “no inherited primary-session memory.”
 
    Fix: Qualify all frontmatter, phase tables, safety text, resolution messages, manifests, and invariants as Codex-default behavior and state precisely what isolation the Claude fallback retains.
 
-14. **Medium — “single source of truth” is knowingly three duplicated copies.** The plan calls the notice single-sourced and then admits prose cannot prevent those copies drifting ([PLAN.md:117](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:117), [PLAN.md:264](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:264)).
+14. **Medium — “single source of truth” is knowingly three duplicated copies.** The plan calls the notice single-sourced and then admits prose cannot prevent those copies drifting ([PLAN.md:117](PLAN.md:117), [PLAN.md:264](PLAN.md:264)).
 
    Fix: Put the canonical protocol/notice in one shared file referenced by both skills and README, or add a deterministic consistency check to the proof procedure.
 
@@ -75,7 +75,7 @@ Arbitration: 14 of 15 findings accepted, 1 factual claim rejected (its recommend
 
 **Rejected — finding 2's factual claim.** Codex asserted `claude auth status` exits 1 with
 `"loggedIn": false` on this machine. Verified directly: it exits 0 with `"loggedIn": true`,
-`"authMethod": "claude.ai"`, `"subscriptionType": "team"`. Codex most likely probed from inside
+`"authMethod": "claude.ai"`. Codex most likely probed from inside
 its own read-only sandbox where the keychain was unreadable. The *recommendation* — preflight the
 Claude branch before selecting it — is accepted regardless; the plan genuinely never checked it.
 
@@ -115,39 +115,39 @@ A consistency check is added to the proof matrix instead.
 
 Most Round-1 findings were addressed well. I withdraw the incorrect local-auth claim, and I will not re-litigate the explicitly locked README marketing scope. Material runtime defects remain:
 
-1. **Critical — shell state cannot survive separate Claude Code Bash calls.** `RUN_DIR`, `TIMEOUT_CMD`, `run_reviewer`, and `SID` are created as shell-local state; the initialization shell’s `EXIT` trap immediately deletes `RUN_DIR`, and later review rounds cannot access the function or SID ([PLAN.md:82](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:82), [PLAN.md:143](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:143)).
+1. **Critical — shell state cannot survive separate Claude Code Bash calls.** `RUN_DIR`, `TIMEOUT_CMD`, `run_reviewer`, and `SID` are created as shell-local state; the initialization shell’s `EXIT` trap immediately deletes `RUN_DIR`, and later review rounds cannot access the function or SID ([PLAN.md:82](PLAN.md:82), [PLAN.md:143](PLAN.md:143)).
 
    Fix: Persist the printed absolute `RUN_DIR` and SID as orchestrator state/files, use a persistent helper or inline status capture on every call, and clean up explicitly only after the workflow finishes.
 
-2. **Critical — the no-timeout fallback executes `600` as the command.** When `TIMEOUT_CMD=""`, `run_reviewer $TIMEOUT_CMD 600 claude ...` collapses to `run_reviewer 600 claude ...`, contradicting the promise to rely on the host timeout ([PLAN.md:132](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:132), [PLAN.md:185](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:185)).
+2. **Critical — the no-timeout fallback executes `600` as the command.** When `TIMEOUT_CMD=""`, `run_reviewer $TIMEOUT_CMD 600 claude ...` collapses to `run_reviewer 600 claude ...`, contradicting the promise to rely on the host timeout ([PLAN.md:132](PLAN.md:132), [PLAN.md:185](PLAN.md:185)).
 
    Fix: Construct the timeout prefix conditionally as an argument array, omitting both the timeout executable and `600` when host timeout is used.
 
-3. **High — output filenames and format-repair state are internally inconsistent.** The plan defines `verdict-r<n>.txt`, but `run_reviewer` writes `out-r<n>`; the Claude command provides no separate verdict path, and a repair response risks overwriting or replacing the original full critique ([PLAN.md:88](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:88), [PLAN.md:112](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:112), [PLAN.md:203](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:203)).
+3. **High — output filenames and format-repair state are internally inconsistent.** The plan defines `verdict-r<n>.txt`, but `run_reviewer` writes `out-r<n>`; the Claude command provides no separate verdict path, and a repair response risks overwriting or replacing the original full critique ([PLAN.md:88](PLAN.md:88), [PLAN.md:112](PLAN.md:112), [PLAN.md:203](PLAN.md:203)).
 
    Fix: Define exact per-attempt paths for original critique, repair verdict, stderr, events, and status, then append the original critique plus the validated repaired verdict without overwriting either.
 
-4. **High — alternate-provider capability can still be stale, and Phase 3 selection is undefined.** Before Round 1 the plan re-probes only the selected reviewer, then may switch to an “other capable reviewer” based on the old Phase-0 result; it also never says whether a fresh Phase-3 inspection should retain Phase-2 selection or return to newly available default Codex ([PLAN.md:61](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:61), [PLAN.md:71](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:71)).
+4. **High — alternate-provider capability can still be stale, and Phase 3 selection is undefined.** Before Round 1 the plan re-probes only the selected reviewer, then may switch to an “other capable reviewer” based on the old Phase-0 result; it also never says whether a fresh Phase-3 inspection should retain Phase-2 selection or return to newly available default Codex ([PLAN.md:61](PLAN.md:61), [PLAN.md:71](PLAN.md:71)).
 
    Fix: Re-probe both providers before each phase boundary, freeze provider choice for the Phase-2 session, and specify a separate deterministic selection rule for the fresh Phase-3 inspector.
 
-5. **High — the failure transition table is not exhaustive.** It covers Round-1 auth/model launch failures but not timeouts, network failures, exit-0 empty output, or a second malformed-verdict failure, although outcome handling classifies all of those as failed rounds ([PLAN.md:73](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:73), [PLAN.md:201](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:201)).
+5. **High — the failure transition table is not exhaustive.** It covers Round-1 auth/model launch failures but not timeouts, network failures, exit-0 empty output, or a second malformed-verdict failure, although outcome handling classifies all of those as failed rounds ([PLAN.md:73](PLAN.md:73), [PLAN.md:201](PLAN.md:201)).
 
    Fix: Add a catch-all transition for every failed Round-1 attempt and explicitly state which failures permit provider fallback versus mandatory stop.
 
-6. **Critical — the Phase-3 diff commands omit the actual uncommitted build.** `git diff "$BASE_COMMIT"..HEAD` compares commits; before the human commit gate, `HEAD` normally still equals `BASE_COMMIT`, so tracked working-tree changes produce an empty patch, and `BASE_COMMIT` is never captured or persisted ([PLAN.md:229](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:229)).
+6. **Critical — the Phase-3 diff commands omit the actual uncommitted build.** `git diff "$BASE_COMMIT"..HEAD` compares commits; before the human commit gate, `HEAD` normally still equals `BASE_COMMIT`, so tracked working-tree changes produce an empty patch, and `BASE_COMMIT` is never captured or persisted ([PLAN.md:229](PLAN.md:229)).
 
    Fix: Capture and persist `BASE_COMMIT=$(git rev-parse HEAD)` immediately before building, then use `git diff --stat "$BASE_COMMIT" --` and `git diff --binary "$BASE_COMMIT" --` to include staged and unstaged tracked changes.
 
-7. **High — large-diff handling silently converts cross-inspection into partial inspection.** “Largest N files” leaves `N` undefined, may skip small security-critical files, and permits reporting inspection complete despite explicitly uninspected changes ([PLAN.md:239](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:239)).
+7. **High — large-diff handling silently converts cross-inspection into partial inspection.** “Largest N files” leaves `N` undefined, may skip small security-critical files, and permits reporting inspection complete despite explicitly uninspected changes ([PLAN.md:239](PLAN.md:239)).
 
    Fix: Chunk and inspect every textual changed file, or mark the inspection incomplete and require an explicit logged human opt-out before reaching the final gate.
 
-8. **Medium — the downgrade notice still overstates hook isolation.** The plan correctly admits managed enterprise settings remain active, then categorically promises “no hooks”; managed hooks/settings are precisely the exception that prevents that guarantee ([PLAN.md:159](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:159), [PLAN.md:256](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:256)).
+8. **Medium — the downgrade notice still overstates hook isolation.** The plan correctly admits managed enterprise settings remain active, then categorically promises “no hooks”; managed hooks/settings are precisely the exception that prevents that guarantee ([PLAN.md:159](PLAN.md:159), [PLAN.md:256](PLAN.md:256)).
 
    Fix: Say “no user/project custom hooks; managed enterprise settings may still apply” everywhere the isolation guarantee appears.
 
-9. **Medium — three acceptance cases do not test what they claim.** A non-zero `codex login status` is caught by the pre-Round-1 probe rather than testing launch-time fallback; masking only `timeout`, `gtimeout`, and `uuidgen` still leaves `/proc` or Python UUID sources; and dynamic sanitized reasons cannot be byte-identical across notice copies ([PLAN.md:323](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:323), [PLAN.md:331](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:331), [PLAN.md:332](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:332)).
+9. **Medium — three acceptance cases do not test what they claim.** A non-zero `codex login status` is caught by the pre-Round-1 probe rather than testing launch-time fallback; masking only `timeout`, `gtimeout`, and `uuidgen` still leaves `/proc` or Python UUID sources; and dynamic sanitized reasons cannot be byte-identical across notice copies ([PLAN.md:323](PLAN.md:323), [PLAN.md:331](PLAN.md:331), [PLAN.md:332](PLAN.md:332)).
 
    Fix: Simulate failure after a successful probe, mask every UUID source while separately testing host-timeout behavior, and compare the static notice template before reason substitution.
 
@@ -181,35 +181,34 @@ inside `codex-build`; Claude-built code should be inspected by Codex when capabl
 explicitly now.
 
 Findings 3, 5, 7, 8, 9 accepted as written. Finding 8 matters more than "medium" here: this machine
-is on a Team plan (`"subscriptionType": "team"`, org Rancho BioSciences), so managed enterprise
-settings are a live possibility rather than a hypothetical, and the isolation wording is corrected
+is on a Team plan, so managed enterprise settings are a live possibility rather than a hypothetical, and the isolation wording is corrected
 everywhere it appears.
 
 ## Round 3 — Codex
 
 The nine Round-2 findings are addressed. New material problems remain:
 
-1. **High — `LOG_FILE` is being used as trusted executable state.** A resumed orchestrator recovers `RUN_DIR` and session IDs from a mutable repo file, then eventually executes `rm -rf <RUN_DIR>`; editing or planting that log can redirect cleanup or resume the wrong reviewer session ([PLAN.md:24](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:24), [PLAN.md:120](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:120)).
+1. **High — `LOG_FILE` is being used as trusted executable state.** A resumed orchestrator recovers `RUN_DIR` and session IDs from a mutable repo file, then eventually executes `rm -rf <RUN_DIR>`; editing or planting that log can redirect cleanup or resume the wrong reviewer session ([PLAN.md:24](PLAN.md:24), [PLAN.md:120](PLAN.md:120)).
 
    Fix: Treat the log as audit-only; before reuse or deletion, require a canonical path under the system temp root, current-user ownership, mode 0700, an expected name prefix, and a run-marker file.
 
-2. **High — `CLAUDE_CAPABLE` still excludes required fallback dependencies.** Claude can pass its CLI/auth/flag probes yet lack every UUID source; `mktemp` can also fail, so the workflow may select Claude and complete Phases 0–1 before discovering the selected branch cannot run ([PLAN.md:53](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:53), [PLAN.md:154](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:154)).
+2. **High — `CLAUDE_CAPABLE` still excludes required fallback dependencies.** Claude can pass its CLI/auth/flag probes yet lack every UUID source; `mktemp` can also fail, so the workflow may select Claude and complete Phases 0–1 before discovering the selected branch cannot run ([PLAN.md:53](PLAN.md:53), [PLAN.md:154](PLAN.md:154)).
 
    Fix: Include UUID-source and private-scratch creation checks in `CLAUDE_CAPABLE` during every provider probe, cleaning up the probe directory immediately.
 
-3. **High — format repair can turn “no review occurred” into a valid verdict.** The motivating failure is a reviewer refusing to review, but the repair then demands only a verdict line; it can produce `APPROVED` without ever supplying the required coverage or substantive analysis ([PLAN.md:254](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:254), [PLAN.md:259](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:259), [PLAN.md:351](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:351)).
+3. **High — format repair can turn “no review occurred” into a valid verdict.** The motivating failure is a reviewer refusing to review, but the repair then demands only a verdict line; it can produce `APPROVED` without ever supplying the required coverage or substantive analysis ([PLAN.md:254](PLAN.md:254), [PLAN.md:259](PLAN.md:259), [PLAN.md:351](PLAN.md:351)).
 
    Fix: Permit format repair only after confirming `a1` contains a substantive review and, on the Claude path, conclusions for every required coverage area; otherwise classify `a1` as a failed attempt.
 
-4. **Critical — `BASE_COMMIT` still does not isolate the build being inspected.** By Phase 3, `PLAN.md`, `LOG_FILE`, and possibly pre-existing user changes are already uncommitted, so `git diff <BASE_COMMIT>` mixes those with Claude’s implementation and cannot establish which hunks the builder introduced ([PLAN.md:286](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:286), [PLAN.md:297](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:297)).
+4. **Critical — `BASE_COMMIT` still does not isolate the build being inspected.** By Phase 3, `PLAN.md`, `LOG_FILE`, and possibly pre-existing user changes are already uncommitted, so `git diff <BASE_COMMIT>` mixes those with Claude’s implementation and cannot establish which hunks the builder introduced ([PLAN.md:286](PLAN.md:286), [PLAN.md:297](PLAN.md:297)).
 
    Fix: Capture a complete pre-build worktree baseline—tracked diff, status, and untracked-file hashes—and give the inspector both pre- and post-build states so it reviews only the build delta.
 
-5. **Medium — untracked-file materialization is not safe for real filenames or file types.** “List and copy their contents” leaves spaces, newlines, symlinks, FIFOs, directories, and oversized files undefined; line-oriented output can corrupt the manifest or make the implementation choose unsafe shell expansion ([PLAN.md:306](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:306)).
+5. **Medium — untracked-file materialization is not safe for real filenames or file types.** “List and copy their contents” leaves spaces, newlines, symlinks, FIFOs, directories, and oversized files undefined; line-oriented output can corrupt the manifest or make the implementation choose unsafe shell expansion ([PLAN.md:306](PLAN.md:306)).
 
    Fix: Specify a NUL-delimited enumeration, quoted path-preserving copies of regular files only, explicit handling for symlinks/special files, and per-file size limits.
 
-6. **Medium — the proof matrix does not exercise the two newest trust boundaries.** It lacks a test that state survives genuinely separate Bash calls without trusting a modified log, and its Phase-3 case starts from an unspecified worktree rather than one already dirty with plan/log and user changes ([PLAN.md:389](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:389)).
+6. **Medium — the proof matrix does not exercise the two newest trust boundaries.** It lacks a test that state survives genuinely separate Bash calls without trusting a modified log, and its Phase-3 case starts from an unspecified worktree rather than one already dirty with plan/log and user changes ([PLAN.md:389](PLAN.md:389)).
 
    Fix: Add adversarial log-tampering/cleanup tests and a Phase-3 case with pre-existing tracked and untracked changes that must be excluded from the builder delta.
 
@@ -251,27 +250,27 @@ hostile filenames. This is round 4 of MAX_ROUNDS=5.
 
 Not implementable yet. The read-only Claude flag set is now honestly scoped and I see no direct write path. The verdict-repair gate is also substantially fixed. Material control-flow and evidence defects remain.
 
-1. **High — cleanup instructions still contradict the audit-only rule.** The plan says persisted literals let a resumed session “recover” them, then forbids treating the log as executable state ([PLAN.md:22](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:22), [PLAN.md:30](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:30)). The substitution is safer than validation for the original log-tampering threat, but cleanup only after the final gate also leaves every earlier STOP orphaned, and an OS temp reaper is not guaranteed.
+1. **High — cleanup instructions still contradict the audit-only rule.** The plan says persisted literals let a resumed session “recover” them, then forbids treating the log as executable state ([PLAN.md:22](PLAN.md:22), [PLAN.md:30](PLAN.md:30)). The substitution is safer than validation for the original log-tampering threat, but cleanup only after the final gate also leaves every earlier STOP orphaned, and an OS temp reaper is not guaranteed.
 
    Fix: Remove all log-recovery language, clean the session-captured directory on every controlled terminal path, and document crash-orphan retention instead of promising OS cleanup.
 
-2. **Critical — the clean-tree substitution immediately invalidates its own baseline.** After requiring an empty worktree, the plan records `BASE_COMMIT` by writing to `LOG_FILE`, dirtying the repository before the build; that log hunk will appear in the claimed builder-only diff ([PLAN.md:310](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:310), [PLAN.md:318](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:318), [PLAN.md:321](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:321)). The gate is also weaker than a complete baseline for ignored files, which every listed Git command omits.
+2. **Critical — the clean-tree substitution immediately invalidates its own baseline.** After requiring an empty worktree, the plan records `BASE_COMMIT` by writing to `LOG_FILE`, dirtying the repository before the build; that log hunk will appear in the claimed builder-only diff ([PLAN.md:310](PLAN.md:310), [PLAN.md:318](PLAN.md:318), [PLAN.md:321](PLAN.md:321)). The gate is also weaker than a complete baseline for ignored files, which every listed Git command omits.
 
    Fix: Make no repository writes between the clean gate and evidence capture; retain `BASE_COMMIT` in trusted session/scratch state, append it afterward, and either inventory ignored files pre/post or explicitly narrow the inspection guarantee to Git-visible files.
 
-3. **High — provider fallback and format repair collide in the attempt namespace.** Paths define only `a1=original` and `a2=repair`, but a Round-1 failure can launch another provider without consuming a round; no unique path remains, especially after a failed `a2`, so evidence can be overwritten or misclassified ([PLAN.md:113](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:113), [PLAN.md:139](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:139), [PLAN.md:275](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:275)).
+3. **High — provider fallback and format repair collide in the attempt namespace.** Paths define only `a1=original` and `a2=repair`, but a Round-1 failure can launch another provider without consuming a round; no unique path remains, especially after a failed `a2`, so evidence can be overwritten or misclassified ([PLAN.md:113](PLAN.md:113), [PLAN.md:139](PLAN.md:139), [PLAN.md:275](PLAN.md:275)).
 
    Fix: Give every process invocation a monotonically increasing attempt ID and record provider plus purpose (`review`/`repair`) separately.
 
-4. **Medium — auto-selection ignores capability recovery before Round 1.** If Codex is unavailable at Phase 0 but becomes capable at the mandatory pre-Round-1 re-probe, nothing reselects it; Claude remains selected despite “Codex remains the default wherever capable” and despite selection not freezing until launch ([PLAN.md:8](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:8), [PLAN.md:90](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:90), [PLAN.md:99](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:99)).
+4. **Medium — auto-selection ignores capability recovery before Round 1.** If Codex is unavailable at Phase 0 but becomes capable at the mandatory pre-Round-1 re-probe, nothing reselects it; Claude remains selected despite “Codex remains the default wherever capable” and despite selection not freezing until launch ([PLAN.md:8](PLAN.md:8), [PLAN.md:90](PLAN.md:90), [PLAN.md:99](PLAN.md:99)).
 
    Fix: In auto mode, recompute selection after every pre-Round-1 probe with Codex preferred; preserve only forced selections.
 
-5. **High — Phase-3 inspector capability and failure transitions are incomplete.** The Claude inspector requires `--add-dir`, yet that flag—and several other invoked flags—is absent from the “whole branch” probe; moreover, the allegedly exhaustive failure table is keyed to Phase-2 `REVIEWER_SELECTION` and does not define what happens when a selected Phase-3 inspector fails after probing ([PLAN.md:60](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:60), [PLAN.md:103](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:103), [PLAN.md:358](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:358)).
+5. **High — Phase-3 inspector capability and failure transitions are incomplete.** The Claude inspector requires `--add-dir`, yet that flag—and several other invoked flags—is absent from the “whole branch” probe; moreover, the allegedly exhaustive failure table is keyed to Phase-2 `REVIEWER_SELECTION` and does not define what happens when a selected Phase-3 inspector fails after probing ([PLAN.md:60](PLAN.md:60), [PLAN.md:103](PLAN.md:103), [PLAN.md:358](PLAN.md:358)).
 
    Fix: Probe every mandatory Claude invocation flag, including `--add-dir`, and define Phase-3 launch/timeout/empty-output transitions with fallback or an explicit human opt-out.
 
-6. **Medium — evidence serialization still violates its own requirements.** The NUL-safe enumeration later writes filenames with raw `%s`, so newline/control-character names corrupt record boundaries; separately, `git diff --binary` embeds binary patches despite the instruction not to inline binaries ([PLAN.md:332](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:332), [PLAN.md:342](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:342), [PLAN.md:353](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:353)).
+6. **Medium — evidence serialization still violates its own requirements.** The NUL-safe enumeration later writes filenames with raw `%s`, so newline/control-character names corrupt record boundaries; separately, `git diff --binary` embeds binary patches despite the instruction not to inline binaries ([PLAN.md:332](PLAN.md:332), [PLAN.md:342](PLAN.md:342), [PLAN.md:353](PLAN.md:353)).
 
    Fix: Encode manifest paths unambiguously, such as shell-escaped or JSON strings, and use a non-binary diff while listing binary paths and sizes separately.
 
@@ -308,10 +307,10 @@ All six round-4 findings are materially addressed. The plan is implementable by 
 
 Nonblocking cleanup items:
 
-- [PLAN.md:148](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:148) retains obsolete final-gate/reaper wording. Delete it in favor of the authoritative every-terminal-path rule.
-- Command examples and outcome handling still use `a1`/`a2` filenames despite the new monotonic `t` namespace ([PLAN.md:208](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:208), [PLAN.md:279](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:279)). Mechanically convert them and associate repair with the current successful review launch.
-- `od -c` is not unambiguous: newline and literal `\n` filenames encode identically ([PLAN.md:381](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:381)). Use hexadecimal output such as `od -An -tx1`.
-- `git diff --numstat` identifies binaries with `- -` but does not supply byte sizes ([PLAN.md:359](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:359)). Compute sizes separately for acceptance row 24.
+- [PLAN.md:148](PLAN.md:148) retains obsolete final-gate/reaper wording. Delete it in favor of the authoritative every-terminal-path rule.
+- Command examples and outcome handling still use `a1`/`a2` filenames despite the new monotonic `t` namespace ([PLAN.md:208](PLAN.md:208), [PLAN.md:279](PLAN.md:279)). Mechanically convert them and associate repair with the current successful review launch.
+- `od -c` is not unambiguous: newline and literal `\n` filenames encode identically ([PLAN.md:381](PLAN.md:381)). Use hexadecimal output such as `od -An -tx1`.
+- `git diff --numstat` identifies binaries with `- -` but does not supply byte sizes ([PLAN.md:359](PLAN.md:359)). Compute sizes separately for acceptance row 24.
 
 These are localized implementation corrections with clear intended behavior, not unresolved design decisions.
 

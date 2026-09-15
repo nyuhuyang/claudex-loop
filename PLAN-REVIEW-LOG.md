@@ -369,3 +369,47 @@ Standing flag for the human: this outcome overturns the Q2 and Q3 decisions lock
 (Sonnet workers as the default). The user chose Sonnet over Haiku as the worker tier, which is a
 different question from Sonnet-workers versus Opus-at-low, and the evidence on the second question
 only surfaced during review.
+
+---
+
+## Act 3 — Build (Claude built, Codex cross-inspected)
+
+Builder: Claude. Base commit `1efe3d2` (clean tree). Diff: 2 files, +108/-2 — `skills/claudex-loop/SKILL.md`
+(2 hunks: the `deep` bullet, one new `models` tunables row) and `README.md` (2 lines).
+
+### Static acceptance checks executed
+
+| Row | Check | Result |
+|---|---|---|
+| 3 | Arithmetic recomputes at published rates | PASS — $9.25 all-Opus, $4.15 Sonnet-workers, $0.45 synthesizer delta |
+| 4 | Quoted claims carry their benchmark name | PASS — DeepWideSearch named at the quote |
+| 10 | Scope + forbidden words | PASS — `REVIEWER_MODEL` untouched, scope sentence present, 0 of bound/ceiling/maximum in the estimate block |
+| 2 | Output-only warning in the estimate | PASS |
+| 7 (skipped branch) | Experimental label retained | PASS — no calibration run was performed |
+
+Rows 1, 5, 6, 8, 9a, 9b are runtime scenarios and row 7's measuring branch needs a live deep-research
+run. **None were executed.** Textual support is not proof of execution, and the tier ships labelled
+experimental accordingly.
+
+### Cross-inspection (fresh Codex session, saw the code cold)
+
+Round 1 returned three findings, all accepted:
+
+1. **Calibration scope was lost in the implementation.** The plan's acceptance row 7 requires
+   recording the question and resolved configuration and retaining uncertainty for other
+   configurations; the SKILL.md label said only "once a live calibration run has corrected the
+   bands". One observation could have retired the warning globally — exactly the defect round 3 of
+   the plan review had raised and round 4 believed corrected. Carried into the paragraph.
+2. **`finders=1` was not unambiguously rejected.** The edit rule rejected fewer than two *angles*
+   while coverage required two *covering finders* — one agent could take two angles, pass the edit
+   check, and then report deficient coverage. Fixed in all three sites to require 2 distinct finder
+   agents on distinct angles, with `finders=1` named as always rejected.
+3. **The diff exceeded the declared edit boundary** — it also touched the separate sign-off
+   paragraph and the existing `research` tunables row, against a declared boundary of "the deep
+   bullet, one tunables row, two README lines". Semantically deep-only, but a literal discrepancy.
+   Resolved by **shrinking the diff to the boundary**, not by widening the boundary after the fact:
+   the `research` row and the sign-off paragraph are restored to their original text and the
+   sign-off instruction now lives inside the deep bullet.
+
+Round 2 (fresh session, same evidence): **"No new or still-broken issues found."**
+Both inspection rounds spent.

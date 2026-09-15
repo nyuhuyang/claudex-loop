@@ -28,8 +28,8 @@ If the user supplies `codex_cli` or `claude_cli`, map the selected provider's ex
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `PLAN_FILE` / `plan` | `PLAN.md` | Plan path used throughout, including the build handoff |
-| `LOG_FILE` / `log` | `PLAN-REVIEW-LOG.md` | Append-only transcript |
+| `PLAN_FILE` / `plan` | `docs/plans/<date>-<slug>.md` | Plan path used throughout, including the build handoff. Resolve the plan/log pair once per run. When the path is generated from this default and already exists, add a numeric suffix rather than overwriting; an explicitly supplied path is used as given, including an existing one for `mode=review` |
+| `LOG_FILE` / `log` | `docs/plans/<date>-<slug>-review-log.md` | Append-only transcript, kept beside its plan |
 | `rounds` / `MAX_ROUNDS` | `5` | Maximum completed plan-review rounds |
 | `builder` | host | Provider implementing the plan |
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |
@@ -42,7 +42,7 @@ Echo roles, paths, round limits, requested models and inspection opt-out before 
 
 ## Phase 0 — Recon
 
-For existing projects, inspect relevant code, dependencies, callers and writers of shared state. Read existing `CONTEXT.md` / `CONTEXT-MAP.md` and relevant ADRs. For greenfield work, research prior art, a reasonable stack and concrete failure modes when useful. Respect an explicit research depth. Deep multi-agent research requires explicit opt-in and an available tool; otherwise use supported targeted research, and report the limitation. Do not require a proprietary Workflow tool or hard-code a research-agent model.
+For existing projects, inspect relevant code, dependencies, callers and writers of shared state. Read existing `CONTEXT.md` / `CONTEXT-MAP.md` and relevant ADRs. For greenfield work, research prior art, a reasonable stack and concrete failure modes when useful. Respect an explicit research depth. Deep multi-agent research requires explicit opt-in and an available tool; estimate and confirm the fan-out first using [the research reference](references/research.md); otherwise use supported targeted research, and report the limitation. Do not require a proprietary Workflow tool or hard-code a research-agent model.
 
 Discover relevant skills through the host's available catalog and the other provider's documented skill locations when accessible. Record only relevant proposed dependencies. Do not assume host MCP, browser, credentials or skills transfer to the other CLI. Verify required build capabilities before relying on them.
 

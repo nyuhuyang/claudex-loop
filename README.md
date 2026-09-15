@@ -65,7 +65,7 @@ flowchart LR
 
 The user controls consequential decisions and authorization. A request to review a plan does not authorize implementation. A request to plan and implement does not need redundant build approval. Commits, pushes and publication follow the user's existing instructions.
 
-`PLAN.md` records what to build; `PLAN-REVIEW-LOG.md` records the findings, dispositions, models, proof and remaining uncertainty. Both paths are configurable. Detailed CLI diagnostics live in a unique directory outside the target checkout.
+The plan records what to build; the review log records the findings, dispositions, models, proof and remaining uncertainty. Both default to `docs/plans/<date>-<slug>.md` and `docs/plans/<date>-<slug>-review-log.md` so a later run cannot overwrite an earlier one, and both paths are configurable. Detailed CLI diagnostics live in a unique directory outside the target checkout.
 
 ## Install
 
@@ -118,8 +118,8 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 | Argument | Default | Purpose |
 |---|---|---|
 | `mode` | `full` | `review` starts from an existing plan |
-| `plan` / `PLAN_FILE` | `PLAN.md` | Plan path, carried through every phase |
-| `log` / `LOG_FILE` | `PLAN-REVIEW-LOG.md` | Append-only decision log |
+| `plan` / `PLAN_FILE` | `docs/plans/<date>-<slug>.md` | Plan path, carried through every phase; a generated default gets a suffix rather than overwriting, while a path you supply is used as given |
+| `log` / `LOG_FILE` | `docs/plans/<date>-<slug>-review-log.md` | Append-only decision log, kept beside its plan |
 | `builder` | current host | `claude` or `codex` |
 | `reviewer_model`, `builder_model`, `inspector_model` | each CLI's configuration | Explicit per-role model override |
 | `reviewer_effort`, `builder_effort`, `inspector_effort` | each CLI's configuration | Explicit supported reasoning effort |

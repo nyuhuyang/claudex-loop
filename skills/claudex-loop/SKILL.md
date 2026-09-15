@@ -52,7 +52,7 @@ Present one assumptions ledger with source paths or research links. Ask for corr
 
 Maintain a short visible decision map. Ask only about unresolved decisions that change the outcome. For each consequential question, give the recommendation, why it matters, and the cost of guessing wrong. Batch independent questions; ask dependent ones sequentially. If the code can answer, inspect it instead. Offer “accept all remaining recommendations” when a long decision list would slow the user down.
 
-Respect existing glossary definitions; resolve ambiguous domain language. Maintain glossary-only context lazily using [CONTEXT-FORMAT.md](CONTEXT-FORMAT.md). Record an ADR only for expensive-to-reverse, non-obvious trade-offs using [ADR-FORMAT.md](ADR-FORMAT.md).
+Read [the interrogation reference](references/interrogate.md) for decision tiering, the demotion rule, and docs-aware probing technique. Respect existing glossary definitions; resolve ambiguous domain language. Maintain glossary-only context lazily using [CONTEXT-FORMAT.md](CONTEXT-FORMAT.md). Record an ADR only for expensive-to-reverse, non-obvious trade-offs using [ADR-FORMAT.md](ADR-FORMAT.md).
 
 Write the resolved `PLAN_FILE` with:
 - Goal and observable acceptance criteria.

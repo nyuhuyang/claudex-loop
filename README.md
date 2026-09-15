@@ -152,7 +152,8 @@ builder are independent.
 
 | Skill | Var | Default | Meaning |
 |-------|-----|---------|---------|
-| `claudex-loop` | `research` | ask | `none` / `web` / `deep` — pre-answers the Phase 0 research gate |
+| `claudex-loop` | `research` | ask | `none` / `web` / `deep` — pre-answers the Phase 0 research gate; `deep` prints a pre-flight cost estimate for sign-off before launching |
+| `claudex-loop` | `models` | `default` | `default` / `sonnet-workers` — deep-research tier only; runs finders and deep-readers on Sonnet instead of the inherited session model |
 | review skills | `reviewer` | auto-detect | `codex` / `claude` — force a reviewer instead of probing |
 | review skills | `REVIEWER_MODEL` | `opus` | Reviewer model on the Claude fallback path |
 | review skills | `REVIEWER_EFFORT` | `high` | Reviewer reasons longer than the planner did |

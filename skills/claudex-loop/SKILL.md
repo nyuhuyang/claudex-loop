@@ -110,7 +110,111 @@ Don't silently pick a research depth — offer the tiers with a recommendation b
 
 - **`none`** — Claude's knowledge + codebase only. Right for medium tasks on familiar ground.
 - **`web`** — a handful of targeted WebSearch passes (docs, gotchas, prior art). Minutes, not a project. The default recommendation for most greenfield work.
-- **`deep`** — launch a **deep-research dynamic workflow** via the Workflow tool: a multi-agent research orchestration (parallel finder agents each searching a different way — prior art, stack landscape, pitfalls/postmortems, docs — then deep-read agents on the best sources, then one synthesis agent producing the brief). Heavy and token-expensive — recommend only for high-stakes greenfield, unfamiliar tech, or when the landscape itself is the question. The user choosing this tier IS the explicit opt-in the Workflow tool requires. **Model pin:** every `agent()` call in the research workflow MUST pass `model: 'opus'` (finders, deep-readers, and the synthesizer alike) — if the main session is on Fable, letting a dozen research agents inherit it annihilates token usage for what is mostly search-and-summarize work. Leave effort at the default — don't pass an `effort` override. **Args gotcha (found in smoke test 2026-08-13):** the workflow runtime may deliver `args` as a JSON-encoded STRING instead of an object — always open the script with `const A = typeof args === 'string' ? JSON.parse(args) : args` and reference `A.*`, or `pipeline(args.questions, ...)` dies instantly with "expects an array".
+- **`deep`** — launch a **deep-research dynamic workflow** via the Workflow tool: a multi-agent research orchestration (parallel finder agents each searching a different way — prior art, stack landscape, pitfalls/postmortems, docs — then deep-read agents on the best sources, then one synthesis agent producing the brief). Heavy and token-expensive — recommend only for high-stakes greenfield, unfamiliar tech, or when the landscape itself is the question. The user choosing this tier IS the explicit opt-in the Workflow tool requires. **Args gotcha (found in smoke test 2026-08-13):** the workflow runtime may deliver `args` as a JSON-encoded STRING instead of an object — always open the script with `const A = typeof args === 'string' ? JSON.parse(args) : args` and reference `A.*`, or `pipeline(args.questions, ...)` dies instantly with "expects an array".
+
+  **Everything from here to the end of this bullet applies ONLY to `agent()` calls inside this deep-research workflow.** No other part of this skill acquires a model or effort rule from it — Phase 2's `REVIEWER_MODEL` and Phase 3 are untouched.
+
+  **This is experimental cost guidance.** None of the numbers below has been measured on this workflow. Remove this label only once a live calibration run has corrected the bands **and** the question and resolved configuration it was measured on are recorded beside them — one observation calibrates one point, not a curve, so the uncertainty stands for every other question, model, and effort level.
+
+  **Effort-first default.** The published guidance is *"Sweep effort on your current model first. It is the cheapest experiment on this page, and most workloads end there. If the sweep shows a gap, price the stronger model alone at low effort."*
+
+  | stage | default |
+  |---|---|
+  | finders | `effort: 'low'` |
+  | deep-readers | `effort: 'low'` |
+  | synthesizer | `model: 'opus'`, `effort` omitted |
+
+  `model` is **omitted** for finders and deep-readers, per workflow-authoring's own default (*"Default to omitting it — the agent inherits the main-loop model"*). The synthesizer **is** pinned to Opus so the coverage-arbitration language below stays true under any session model; that pin is a stated choice, not a measured one. No claim is made that `low` is cheaper or better here: the supporting results were measured on Claude Fable 5, as whole-task cost, comparing an orchestrator against a solo model — this workflow is orchestrated either way.
+
+  **Configuration resolution — apply in order, last wins, and print the result:**
+  1. Session model inherited (finders/readers); synthesizer pinned Opus.
+  2. **Session-pricing policy** — if the session model's published *output* rate exceeds Opus's, pin finders and readers to `model: 'opus'`. A **user-approved pricing policy, not a demonstrated saving**: it stops an above-Opus rate multiplying across ~11 agents. (Fable 5.1's cached-*input* rate is below Opus's — Fable 5's is not — so "2x Opus" is not uniformly true; this policy is about output rate only.)
+  3. `models=sonnet-workers` — overrides 1 and 2 for finders and readers.
+  4. `effort=<level>` — finders and readers only; never the synthesizer.
+
+  **`models=sonnet-workers`** is an opt-in, with no "must beat" gate behind it. On DeepWideSearch, *"`low` also matched an orchestrator with a Claude Sonnet 5 worker at 29% lower cost: lowering effort beat an architecture change."* That was orchestrator-vs-solo on Fable 5, so it does not predict the ranking here — it is why effort-first is the default, not evidence that Sonnet workers lose on your workload. Orchestrators did win on a 21.6M-token context-exceeding corpus (~half the cost, 10-12 points lower accuracy), a shape a very large sweep can reach.
+
+  **Pre-flight estimate — print this at the prompt sign-off that already exists, before launching. No separate approval step.**
+
+  ```
+  Deep research plan — review before launch
+
+    resolved configuration
+      finders        4 agents   effort=low       model: inherited (session)
+      deep-readers   6 agents   effort=low       model: inherited (session)
+      synthesizer    1 agent    effort=default   model: opus (pinned)
+      retry allowance: up to 2 finder relaunches (counted below)
+
+    question -> finder angle assignment (angle shown, not just the id)
+      Q1  prior art        -> f1 "existing tools/products"   f3 "academic + standards"
+      Q2  stack landscape  -> f2 "official docs"             f4 "community comparisons"
+      Q3  pitfalls         -> f1 "postmortems"               f4 "issue trackers + gotchas"
+      (every question needs >= 2 DISTINCT finder AGENTS on >= 2 DISTINCT angles;
+       one agent covering two angles does NOT satisfy it, so `finders=1` is always rejected)
+
+    workload estimate — UNCALIBRATED GUESSES, NOT A PREDICTION
+      finders        4 x ~25k   ~100k output tokens
+      deep-readers   6 x ~40k   ~240k
+      synthesizer    1 x ~30k    ~30k
+      retries        2 x ~25k    ~50k
+      ─────────────────────────────────────
+      13 launches · ~420k output tokens
+
+    These per-agent numbers have never been observed for this workflow. Output
+    tokens only — input is excluded and is not small. Actual spend includes input
+    and may differ substantially in either direction.
+
+    Arithmetic at the resolved configuration and current published rates: ~$X.XX
+    (arithmetic over the guesses above, not a forecast)
+
+    Launch runs exactly this configuration and these counts.
+  Reply: launch / set agents <stage>=<n> / models=sonnet-workers / effort=<level> / cancel
+  ```
+
+  Token accounting: **output tokens across all agent turns, including thinking and tool-call arguments** — the units `effort` governs. Bands are stated *for the resolved effort level*, so nothing is discounted twice. Give **one** dollar figure, for the configuration that will actually run; never a range for a configuration the run will not execute.
+
+  **Sign-off binds execution.** `launch` runs exactly the printed configuration, counts, and retry allowance. `set agents` / `models=` / `effort=` are **edits** — each reprints the block and waits. Reject any edit leaving a question covered by fewer than **2 distinct finder agents** on distinct angles, and say why — two angles assigned to one agent does not satisfy the rule, so `set agents finders=1` is always rejected. If the workflow would exceed approved counts, stop and re-present.
+
+  **Finder coverage.** Every question must be covered by **2 distinct finder agents** on distinct angles. Angles are assigned (printed above), never chosen by the agents, so they cannot collapse onto one. A finder covers its question only if it returns >= 1 candidate *relevant to that question* — the synthesizer judges relevance; zero-candidate is not the only failure. Up to **2 relaunches total** across the run, from the printed allowance, not per-finder. Do **not** use loop-until-dry — it is unbounded against an approved allowance. Name any question ending with fewer than 2 covering finders in the brief.
+
+  **Deep-reader schema** — quotes are provenance, coverage fields are a warning signal:
+
+  ```js
+  const READ_SCHEMA = { type: 'object', properties: {
+    source_id: { type: 'string' },
+    claims: { type: 'array', items: { type: 'object', properties: {
+      claim:   { type: 'string' },
+      quote:   { type: 'string' },   // provenance for THIS claim
+      locator: { type: 'string' },   // heading/anchor within source_id
+      caveats: { type: 'string' },   // limitations stated near the quote, or "none found"
+    }, required: ['claim','quote','locator','caveats'] } },
+    sections_reviewed: { type: 'array', items: { type: 'string' } },
+    sections_skipped:  { type: 'array', items: { type: 'string' } },
+    coverage_note:     { type: 'string' },
+  }, required: ['source_id','claims','sections_reviewed','sections_skipped','coverage_note'] }
+  ```
+
+  Quotes establish that a *retained* claim is faithful. Self-reported coverage is a **warning signal, not an omission control** — a reader can report full coverage and "none found" while having missed the limitation that mattered, and every field still validates. The only real check is the Opus synthesizer spot-checking `source_id` + `locator` against the source for the claims the brief leans on. That is a prose instruction, not a guarantee.
+
+  **Sign-off covers both.** The prompt sign-off this tier already requires is the same reply that approves this estimate — draft both together and launch only on `launch`.
+
+  **`budget` guard**, derived from approved counts rather than a constant:
+
+  ```js
+  const A = typeof args === 'string' ? JSON.parse(args) : args
+  const EST_OUTPUT = approved.finders * BAND.finder
+                   + approved.readers * BAND.reader
+                   + BAND.synth
+                   + approved.retries * BAND.finder
+  const SYNTH_RESERVE = BAND.synth
+  if (budget.total !== null && budget.remaining() < EST_OUTPUT + SYNTH_RESERVE) {
+    log(`budget remaining ${Math.round(budget.remaining()/1000)}k < approved estimate + synthesis reserve`)
+    return { launched: false, reason: 'insufficient_budget' }
+  }
+  ```
+
+  `!== null` so a zero total is not read as absent. **Before dispatching any worker, require `budget.remaining() >= SYNTH_RESERVE + BAND[thatStage]`** — comparing against `SYNTH_RESERVE` alone lets a 40k reader launch with 31k left against a 30k reserve and exhaust the budget before synthesis. When that check fails, stop launching workers and synthesize what returned, logging the truncation. Parallel workers in flight are not individually accounted for, so dispatch in bounded batches and re-check between them: headroom is **best-effort, not a guarantee** — the bands are guesses, so no arithmetic over them can be one. **Genuine exhaustion is different and unrecoverable**: an exhausted budget makes `agent()` throw, so return partial results naming the completed stages and do not attempt or promise synthesis. On `launched: false`, report the shortfall and offer the `web` tier or reduced counts — never proceed silently.
+
 
 If invoked with `research=none|web|deep`, skip the question and use that tier.
 
@@ -250,6 +354,7 @@ For the Codex path, echo the active model first: read the `model` line from `~/.
 | `REVIEWER_MODEL` | `opus` | Reviewer model on the Claude path. |
 | `REVIEWER_EFFORT` | `high` | Reviewer reasons longer than the planner did. |
 | `research` | ask | `none` / `web` / `deep` — pre-answers the Phase 0 research gate. |
+| `models` | `default` | `default` / `sonnet-workers` — **deep-research tier only.** `sonnet-workers` runs finders and deep-readers on Sonnet instead of the inherited session model. |
 | `inspect` | `on` | Post-build cross-inspection. `off` = skip (logged opt-out, never silent). |
 | `MAX_INSPECTION_ROUNDS` | `2` | Initial post-build review + one reinspection after accepted fixes. |
 

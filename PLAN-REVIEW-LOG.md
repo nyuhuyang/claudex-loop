@@ -1,449 +1,371 @@
-# Plan Review Log: Claude-only fallback for claudex-loop
+# Plan Review Log: deep-research workload estimation + model/effort tiering
 Phases 0-1 (recon + interrogation) complete — plan locked with the user. MAX_ROUNDS=5.
-Reviewer: Codex (codex-cli 0.150.1, config model = gpt-5.6-sol, reasoning effort xhigh).
+Reviewer: Codex (codex-cli 0.153.4, logged in via ChatGPT). TIMEOUT_MODE=timeout.
+Scope constraint stated by the user and carried into the plan: deep-research tier ONLY.
 
 ## Round 1 — Codex
 
-The plan is not sound enough to implement. Material findings:
+The plan still has material defects. The headline arithmetic is correct; the cost guarantees, downgrade rationale, and runtime instructions are not.
 
-1. **Critical — Claude “read-only” is not airtight.** The plan equates an allow/deny list with Codex’s filesystem sandbox ([PLAN.md:75](PLAN.md:75)). `--safe-mode` disables customizations, not filesystem writes; the denylist omits other command-capable tools, and managed policy settings still apply. One refused `Write` attempt does not prove the invariant claimed in assumption 8.
+### 1. [P1] I1 relies on a false description of effort
 
-   Fix: Use `--restricted --tools "Read,Grep,Glob" --permission-mode dontAsk --strict-mcp-config --safe-mode`, constrain the working directory, and describe this honestly as tool-level protection unless an OS-enforced read-only mount is added.
+[PLAN.md:151](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:151) says effort trims reasoning tokens. Anthropic documents effects on **text output, tool calls, and thinking**, including fewer tool calls at lower effort. Search results are input; emitting quotations does not establish what dominates an agent’s total bill. Sonnet readers also retain default effort while the alternative uses Opus at low effort. The plan has not established which is cheaper for equivalent coverage. [Effort documentation](https://platform.claude.com/docs/en/build-with-claude/effort)
 
-2. **Critical — the fallback’s own availability is never checked.** Locally, `codex login status` succeeds, but `claude auth status` currently exits 1 with `"loggedIn": false`; therefore this exact environment could select the Claude fallback and immediately fail despite Claude Code itself running.
+**Fix:** Remove the reasoning-only claim and require a representative cost-and-coverage comparison before making Sonnet mandatory.
 
-   Fix: Preflight `claude --version`, required flag support, `claude auth status`, and model availability before selecting or offering the Claude branch.
+### 2. [P1] The exemption from “measure first” is rationalization
 
-3. **High — the Codex detector is not executable detection logic.** `codex --version` plus a comment does not parse or compare `codex-cli 0.150.1` against `0.130`, and the plan ignores the available cheap `codex login status` command while calling its existence an open question ([PLAN.md:20](PLAN.md:20), [PLAN.md:256](PLAN.md:256)).
+[PLAN.md:159](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:159) invents a production-only boundary and calls two calculated estimates a “measurement point.” Neither estimate measures effort savings, retries, or quality. This is a reusable skill pack, even if individual research questions are unique.
 
-   Fix: Specify deterministic numeric version parsing, run `codex login status`, validate override values, and retain launch-time handling for expired credentials.
+The current authority explicitly discusses research workloads: on DeepWideSearch, lowering the single model’s effort matched a Sonnet-worker configuration at 29% lower cost. That does not establish the winner here, but directly undermines dismissing the comparison as irrelevant. [Cost optimization guidance](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)
 
-4. **High — detection goes stale and `REVIEWER` conflates preference with capability.** A probe before lengthy Phases 0–1 can be obsolete by Phase 2, and much more so by Phase 3; additionally, forcing `reviewer=claude` incorrectly suppresses `codex-build` even when Codex is fully available ([PLAN.md:111](PLAN.md:111)).
+**Fix:** Make a small representative comparison an acceptance requirement; if deferred, describe tiering as experimental rather than an established cost optimization.
 
-   Fix: Track `REVIEWER_SELECTION` separately from `CODEX_CAPABLE`, revalidate capability immediately before Phases 2 and 3, and never change an established reviewer session silently.
+### 3. [P1] The claimed comparison survives only under unstated equal-work assumptions
 
-5. **High — unauthenticated Codex does not actually trigger the promised automatic fallback.** The goal promises an automatic end-to-end fallback ([PLAN.md:6](PLAN.md:6)), but Round 1 merely “offers” it, while later provider failures stop outright ([PLAN.md:89](PLAN.md:89)).
+[PLAN.md:45](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:45) is conditionally correct: identical stage workloads and cache treatment preserve a price advantage when inputs are included. It does **not** establish the real comparison between different model/effort configurations.
 
-   Fix: Define exact transitions: auto mode retries Round 1 with Claude without incrementing the round, forced Codex stops, and post-Round-1 provider loss requires an explicitly logged restart because continuity cannot be preserved.
+Using the plan’s output-only numbers:
 
-6. **High — failure classification is incompatible with the unchanged Codex command.** Stderr is discarded, so `<reason>` cannot be reported; moreover, the Codex pipeline’s status is normally `grep`’s status, which can succeed after `thread.started` even if Codex later fails.
+- Sonnet early stages: `340k × $10/M = $3.40`.
+- Opus-low early stages break even at `136k × $25/M = $3.40`.
+- Below 136k output tokens, Opus-low wins, assuming the synthesizer is unchanged.
 
-   Fix: Capture Codex stdout, stderr, and its actual exit status separately without a live `grep` pipeline, then parse the saved event stream and surface a sanitized error.
+Whether that reduction occurs is unmeasured. Different search turns, retries, and input volumes can also change the ranking. I3’s “two cache writes” is not implied by two models: caching depends on matching prefixes and their availability; growing conversations introduce additional writes. [Caching documentation](https://platform.claude.com/docs/en/build-with-claude/prompt-caching)
 
-7. **High — fixed `/tmp` filenames create races and a symlink vulnerability.** Concurrent loops overwrite each other, stale Codex output can be mistaken for a new verdict, and `> /tmp/claude-verdict.txt` follows a pre-existing symlink and truncates its target before Claude starts ([PLAN.md:54](PLAN.md:54)).
+**Fix:** Label the comparison “identical-workload price illustration” and include input/cache sensitivity plus the Opus-low break-even threshold.
 
-   Fix: Create a private per-run directory with `umask 077` and `mktemp -d`, use round-specific files, validate freshness/non-emptiness, and clean up with a trap.
+### 4. [P1] The sign-off table presents invented point estimates as bounds
 
-8. **High — verdict parsing does not enforce the stated contract.** Searching the last line for a token accepts suffixes, both verdicts, quoted instructions, or other malformed output; trailing blank lines are also unspecified. Appending the critique before validation leaves failed attempts looking like completed rounds.
+[PLAN.md:27](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:27) contains single constants, not bands. Nothing defines whether “output” includes all thinking and tool-call output across every agent turn or only final responses. There is no calibration, uncertainty interval, or enforcement supporting “$9.25 as an upper bound.”
 
-   Fix: Require exactly one verdict and an exact last non-empty line matching `^VERDICT: (APPROVED|REVISE)$`, allow one format-only repair without consuming a round, and log failed attempts explicitly.
+The table also never explicitly says **input costs excluded; total cost will differ**, despite two later claims that it does. A calculated output subtotal is neither an observed bill nor a spending ceiling.
 
-9. **High — the three-finding quota incentivizes hallucinated defects.** A sound plan may not contain three real flaws, so the reviewer is ordered to manufacture findings; the claim that same-family reviewers are more agreeable is also unverified ([PLAN.md:137](PLAN.md:137)).
+**Fix:** Define the token accounting, show explicitly uncalibrated ranges and excluded costs, and delete “upper bound” unless an actual enforceable limit supports it.
 
-   Fix: Replace the quota with a required coverage checklist and permit zero findings when each area was examined and approval is justified.
+### 5. [P1] The quote schema does not mitigate the stated omission failure
 
-10. **High — Phase 3’s Claude reviewer cannot perform the promised diff inspection.** With Bash denied, it cannot run `git status`, `git diff`, or `git show`; merely reading the current tree cannot distinguish the build from the base, and the plan gives no safe transport for large, untracked, or binary diffs ([PLAN.md:105](PLAN.md:105)).
+[PLAN.md:84](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:84) changes its argument halfway through: the identified failure is **missing information**, but the claimed mitigation detects **distortion in retained information**.
 
-   Fix: Have the orchestrator produce a bounded changed-file manifest and diff including untracked files, provide them through a private readable input, and define handling for large and binary changes.
+A reader can quote “supports replication” accurately while omitting the next paragraph’s production limitation. Every field validates; the synthesizer sees no mismatch. `{"claims":[]}` also validates. String fields cannot establish verbatim fidelity, and the JavaScript comment is not a schema constraint passed to the reader.
 
-11. **High — `PLAN_FILE` is a fake tunable.** Both existing skills and the proposed resume prompt hardcode `PLAN.md`, while revisions use `PLAN_FILE`; a non-default value therefore reviews one file and edits another ([PLAN.md:65](PLAN.md:65), [codex-review/SKILL.md:74](skills/codex-review/SKILL.md:74)).
+**Fix:** Require source locations and explicit caveat/coverage reporting, with source-level checks by the existing synthesizer; describe quotations as provenance support, not omission detection.
 
-   Fix: Resolve and quote one plan path at startup and interpolate it into every initial prompt, resume prompt, inspection prompt, log entry, and build handoff.
+### 6. [P1] Finder failures are no more automatically observable than reader failures
 
-12. **Medium — the literal timeout regresses current portability guidance.** The new branch uses `timeout 600`, although the existing skill correctly notes that stock macOS has only `gtimeout` when coreutils is installed ([claudex-loop/SKILL.md:202](skills/claudex-loop/SKILL.md:202)); the UUID fallback also remains unresolved.
+[PLAN.md:75](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:75) assumes missed sources are recoverable through more finders. Nothing tells the workflow how it detects a missing source, when to retry, or when enough independent coverage exists. Multiple finders can share the same blind spot. “Loop until dry” can terminate confidently on incomplete coverage—or expand spending beyond the approved count.
 
-   Fix: Define a portable timeout/UUID preflight and use the host tool-call timeout when neither `timeout` nor `gtimeout` exists.
+**Fix:** Specify coverage requirements for the approved research questions and a bounded retry allowance included in the estimate.
 
-13. **High — user-facing documentation will remain materially false.** The plan leaves categorical “two models,” “rival model,” and “whoever made it never checks it” claims unchanged ([README.md:5](README.md:5), [README.md:58](README.md:58)); both skill frontmatters and resolution messages likewise remain Codex-only. “No memory” also contradicts the promised cross-round memory unless qualified as “no inherited primary-session memory.”
+### 7. [P1] The workflow-authoring exception is asserted without meeting its condition
 
-   Fix: Qualify all frontmatter, phase tables, safety text, resolution messages, manifests, and invariants as Codex-default behavior and state precisely what isolation the Claude fallback retains.
+[PLAN.md:103](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:103) quotes a conditional exception requiring high confidence, then treats “deep research” as an explicitly named exception. The supplied quotation names no such workflow. Unbenchmarked I1 and the ineffective omission mitigation do not establish that confidence.
 
-14. **Medium — “single source of truth” is knowingly three duplicated copies.** The plan calls the notice single-sourced and then admits prose cannot prevent those copies drifting ([PLAN.md:117](PLAN.md:117), [PLAN.md:264](PLAN.md:264)).
+Avoiding inherited Fable pricing explains explicit model selection; it does not establish that Sonnet readers meet the research quality requirement. A MUST can enforce a selected configuration, but cannot validate the selection.
 
-   Fix: Put the canonical protocol/notice in one shared file referenced by both skills and README, or add a deterministic consistency check to the proof procedure.
+**Fix:** Justify explicit pins through faithful execution of the user-approved model plan, and distinguish that operational requirement from the still-unverified Sonnet recommendation.
 
-15. **High — the verified/unverified split overstates the evidence.** A single rejected `Write` does not verify global read-only behavior; reviewer self-report does not prove hooks were absent; two unrelated plugin manifests do not establish platform lifecycle limits; and the proof omits auth failure, malformed verdicts, concurrency, non-default paths, Phase 3, invalid overrides, and mid-session capability changes.
+### 8. [P1] The proposed scoping language directly contradicts the scope constraint
 
-   Fix: Rewrite each assumption to separate documented behavior, narrowly observed behavior, and inference, record exact commands/versions/results, and expand proof into a branch-and-failure acceptance matrix.
+[PLAN.md:112](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:112) says “everywhere else in this skill, omit `model`.” That is a new whole-skill instruction. The existing skill explicitly selects the Claude reviewer model and passes `--model` in Phase 2. An LLM must resolve the contradiction itself; asserting “scoped” nearby does not remove it.
 
-No repository files were modified during this review.
+**Fix:** Delete the whole-skill omission instruction and limit every new model/effort prescription explicitly to `agent()` calls inside the Phase 0 deep-research workflow.
+
+### 9. [P1] The budget guard neither checks feasibility nor performs its announced fallback
+
+[PLAN.md:55](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:55) admits a run with 150k remaining while projecting 370k output alone. Using the plan’s stated exhaustion behavior, that can fail after expensive partial research, before synthesis.
+
+Returning `{ degraded: true }` does not perform web research. No parent-side instruction handles that return. The truthiness check also conflates a zero total with an absent budget.
+
+**Fix:** Compare a non-null budget against the defined workload estimate with a synthesis reserve, and explicitly instruct the parent how to handle degradation and mid-run exhaustion.
+
+### 10. [P1] Sign-off does not bind a sufficiently defined execution
+
+[PLAN.md:37](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:37) offers `cut <stage>` without defining whether it reduces agents or removes a necessary stage. Counts appear fixed in the estimate, while finder recovery permits expansion. Selecting `models=opus-low` is not clearly distinguished from approving launch.
+
+The “second exit” from MUST is merely a printed all-Opus baseline; no selectable all-Opus/default-effort execution mode exists.
+
+**Fix:** Define override precedence and edit-versus-launch semantics, bind execution to approved counts/models/efforts and retry allowances, and remove the nonexistent baseline “exit.”
+
+### 11. [P2] One dollar claim is wrong, and the benchmark quotation loses its scope
+
+[PLAN.md:81](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:81) says downgrading synthesis saves $0.75. At the stated rates, $0.75 is its entire Opus output cost; switching to Sonnet saves **$0.45**. The totals **370k, $4.15, and $9.25** are otherwise correct under the stated assumptions, and current base prices match. [Pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+
+The “lowest effort … more tasks than any other model” quotation specifically concerns **Zapier AutomationBench**, not a general research-quality ordering. [Opus announcement](https://www.anthropic.com/news/claude-opus-5)
+
+**Fix:** Correct the saving to $0.45 and preserve the benchmark qualification wherever using the quality claim.
+
+### 12. [P2] The file-change scope is broader than advertised
+
+[PLAN.md:126](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:126) adds a tunables row, README changes, and `.gitignore` cleanup despite the “one paragraph” deliverable. Deep-specific documentation is related, but `.DS_Store` cleanup is plainly unrelated.
+
+**Fix:** Remove `.gitignore` cleanup and reconcile the declared edit boundary with any deep-specific documentation changes.
+
+**Blocking risks:** Risks 1–3, 5, and 7 underpin concrete defects above; listing them does not make the estimates trustworthy or the downgrade justified. A missing compiled test system is not itself blocking for prose, but representative workflow validation and instruction-consistency checks are missing acceptance criteria.
 
 VERDICT: REVISE
 ### Claude's response
 
-Arbitration: 14 of 15 findings accepted, 1 factual claim rejected (its recommendation still adopted).
+All 12 accepted. Findings 1 and 2 are correct and decisive — I verified both against primary
+sources before conceding, and both refute load-bearing claims I made.
 
-**Rejected — finding 2's factual claim.** Codex asserted `claude auth status` exits 1 with
-`"loggedIn": false` on this machine. Verified directly: it exits 0 with `"loggedIn": true`,
-`"authMethod": "claude.ai"`. Codex most likely probed from inside
-its own read-only sandbox where the keychain was unreadable. The *recommendation* — preflight the
-Claude branch before selecting it — is accepted regardless; the plan genuinely never checked it.
+**Finding 1 — I1 is false, not merely unbenchmarked.** platform.claude.com/docs/en/build-with-claude/effort:
+*"The effort parameter affects **all tokens** in the response, including: Text responses and
+explanations; Tool calls and function arguments; Thinking (when active). Because effort applies to
+every output token, it works whether or not thinking is enabled."* My entire "finders/deep-readers
+are content-dominated so effort is a weak lever on them" argument rests on effort trimming only
+reasoning. It does not. I1 is deleted, not softened.
 
-**Accepted and escalated — finding 1.** Codex was right and understated it. Probing the reviewer
-session's actual tool inventory returned: Agent, Glob, Grep, ListAgents, Read, ReportFindings,
-ScheduleWakeup, ShareOnboardingGuide, Skill, ToolSearch, Workflow, plus deferred CronCreate,
-CronDelete, CronList, DesignSync, EnterWorktree, ExitWorktree, Monitor, PushNotification,
-RemoteTrigger, SendMessage, TaskOutput, TaskStop, WebFetch, WebSearch. `Agent` alone defeats the
-denylist entirely — a spawned subagent carries its own tool set including Write and Bash.
-Assumption 8 proved only "the Write tool was refused", never "the session cannot write".
-Verified replacement: `--restricted --tools "Read,Grep,Glob" --strict-mcp-config --safe-mode
---permission-mode dontAsk` yields exactly three tools (Glob, Grep, Read), still reads repo files,
-and still resumes across rounds. All three verified 2026-08-31.
+**Finding 2 — the exemption was rationalization, and the measurement I claimed did not exist has
+been published for this exact workload class.** optimizing-for-cost-and-intelligence:
+*"On DeepWideSearch, `low` also matched an orchestrator with a Claude Sonnet 5 worker at 29% lower
+cost: lowering effort beat an architecture change."* Plus the general research-benchmark curve
+(*"`low` gave up 1 to 3 points for a third to a half off the cost per task, `medium` matched the
+default's accuracy at about 70% to 87% of its cost"*) and an explicit decision procedure
+(*"Sweep effort on your current model first... If the sweep shows a gap, price the stronger model
+alone at low effort. That is the number an advisor pairing has to beat"*). I invented a
+production-only boundary to avoid a comparison that had already been run and published.
 
-**Accepted — 3, 4, 5, 6, 7, 8, 10, 11, 12, 14, 15.** All correct as stated. Notably `codex login
-status` does exist and exits 0 ("Logged in using ChatGPT"), which closes what the plan had listed
-as an open question. Findings 6 and 11 describe defects that pre-exist in the current skills; the
-revision fixes them on the paths it touches and records the rest as untouched pre-existing debt.
+**Consequence: the default inverts.** Opus at low effort becomes the default for finders and
+deep-readers; Sonnet workers become the opt-in that must beat it. This overturns decisions the user
+locked in Q2 and Q3, so it is surfaced to the user at this round rather than absorbed silently —
+the user chose Sonnet over Haiku as the cheap tier, which is a different question from
+Sonnet-workers versus Opus@low, and that distinction was mine to catch and I did not.
 
-**Accepted — 9, with a flag to the user.** The three-finding quota is replaced by a coverage
-checklist permitting zero findings. This reverses a cosmetic item the user accepted earlier in
-Phase 1; it is called out at the next human gate rather than changed silently.
+**Finding 11 arithmetic — conceded.** Synthesizer at 30k output: Opus $0.75, Sonnet $0.30, so the
+saving is $0.45, not $0.75. I quoted the total as the delta.
 
-**Partially accepted — 13.** Accepted: both skills' frontmatter `description`, the Resolution
-messages, and the imprecise "no memory" wording are functional text and are corrected. Rejected:
-rewriting the README hero, the mermaid diagram, the phase table, and the "whoever made the thing
-never checks the thing" invariant. The user explicitly locked Q4 at minimal-honest-change with
-those assets untouched, on the grounds that Codex remains the default path and diluting the
-headline for a downgrade path is a net loss. Reaffirming that decision, not deferring to the
-reviewer.
+**Finding 8 — a real scope leak I introduced.** "everywhere else in this skill, omit `model`" is a
+whole-skill instruction that contradicts Phase 2, which passes `--model <REVIEWER_MODEL>`. It also
+violates the user's own deep-research-only constraint. Deleted; every new prescription is now
+bound to `agent()` calls inside the Phase 0 deep-research workflow.
 
-**Partially accepted — 14.** The "single source of truth" label is dropped as false; the notice
-stays duplicated in three places because Q2 explicitly rejected extracting a shared protocol file.
-A consistency check is added to the proof matrix instead.
+**Finding 5 — conceded, and the fix changes what the schema is for.** Quotes detect distortion in
+retained claims; they cannot detect an omitted paragraph. `{"claims":[]}` validates. The schema is
+now described as provenance support, with coverage reporting added as the omission control.
+
+**Findings 3, 4, 6, 7, 9, 10, 12 accepted as written.** Finding 9 in particular: a 150k floor
+against a 370k projection is incoherent, and `budget.total &&` treats 0 as absent.
 
 ## Round 2 — Codex
 
-Most Round-1 findings were addressed well. I withdraw the incorrect local-auth claim, and I will not re-litigate the explicitly locked README marketing scope. Material runtime defects remain:
+**I3 is better grounded as a hypothesis, but it still cannot support the advertised savings or configuration ranking.** The revision fixes the false effort-only statement, whole-skill scope leak, synthesizer arithmetic, Zapier attribution, and unrelated `.gitignore` change. Several other findings remain only partially addressed.
 
-1. **Critical — shell state cannot survive separate Claude Code Bash calls.** `RUN_DIR`, `TIMEOUT_CMD`, `run_reviewer`, and `SID` are created as shell-local state; the initialization shell’s `EXIT` trap immediately deletes `RUN_DIR`, and later review rounds cannot access the function or SID ([PLAN.md:82](PLAN.md:82), [PLAN.md:143](PLAN.md:143)).
+### 1. [P1] I3 transfers more than the model—and supports no stage-specific conclusion
 
-   Fix: Persist the printed absolute `RUN_DIR` and SID as orchestrator state/files, use a persistent helper or inline status capture on every call, and clean up explicitly only after the workflow finishes.
+[PLAN.md:29](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:29) applies whole-task Fable results to individual Opus finders/readers. The cited comparison also changes orchestration architecture; this plan retains an eleven-agent workflow under both configurations. It therefore transfers across **model, architecture, and stage**, not just model.
 
-2. **Critical — the no-timeout fallback executes `600` as the command.** When `TIMEOUT_CMD=""`, `run_reviewer $TIMEOUT_CMD 600 claude ...` collapses to `run_reviewer 600 claude ...`, contradicting the promise to rely on the host timeout ([PLAN.md:132](PLAN.md:132), [PLAN.md:185](PLAN.md:185)).
+“Extraction is the least effort-sensitive stage” is another unsupported load-bearing assertion. Neither cited result measures these stages separately. The authority explicitly recommends measuring the deployed model’s effort curve. [Cost optimization guidance](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)
 
-   Fix: Construct the timeout prefix conditionally as an argument array, omitting both the timeout executable and `600` when host timeout is used.
+**Fix:** Use the published results to justify testing low effort first; remove stage-specific and numerical predictions until this workflow is measured.
 
-3. **High — output filenames and format-repair state are internally inconsistent.** The plan defines `verdict-r<n>.txt`, but `run_reviewer` writes `out-r<n>`; the Claude command provides no separate verdict path, and a repair response risks overwriting or replacing the original full critique ([PLAN.md:88](PLAN.md:88), [PLAN.md:112](PLAN.md:112), [PLAN.md:203](PLAN.md:203)).
+### 2. [P1] The new effort-cost range is mathematically wrong and uses the wrong quantity
 
-   Fix: Define exact per-attempt paths for original critique, repair verdict, stderr, events, and status, then append the original critique plus the validated repaired verdict without overwriting either.
+[PLAN.md:75](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:75) reports **$5.60–$6.90**. Even accepting the unsupported assumption that the benchmark reduction applies to output spending:
 
-4. **High — alternate-provider capability can still be stale, and Phase 3 selection is undefined.** Before Round 1 the plan re-probes only the selected reviewer, then may switch to an “other capable reviewer” based on the old Phase-0 result; it also never says whether a fresh Phase-3 inspection should retain Phase-2 selection or return to newly available default Codex ([PLAN.md:61](PLAN.md:61), [PLAN.md:71](PLAN.md:71)).
+- Finders/readers cost $8.50 at the stated baseline.
+- Synthesis stays $0.75.
+- A one-third to one-half reduction gives **$5.00–$6.42**, not the printed range.
 
-   Fix: Re-probe both providers before each phase boundary, freeze provider choice for the Phase-2 session, and specify a separate deterministic selection rule for the fresh Phase-3 inspector.
+More fundamentally, the published reduction concerns **total task cost**, not output-token count. It cannot simply discount this output-only subtotal.
 
-5. **High — the failure transition table is not exhaustive.** It covers Round-1 auth/model launch failures but not timeouts, network failures, exit-0 empty output, or a second malformed-verdict failure, although outcome handling classifies all of those as failed rounds ([PLAN.md:73](PLAN.md:73), [PLAN.md:201](PLAN.md:201)).
+The table also labels 25k/40k as estimates for **low-effort** agents, then apparently discounts those same quantities to estimate low effort again.
 
-   Fix: Add a catch-all transition for every failed Round-1 attempt and explicitly state which failures permit provider fallback versus mandatory stop.
+**Fix:** Define whether each token estimate belongs to low or default effort and calculate its output subtotal directly; remove the transferred percentage discount.
 
-6. **Critical — the Phase-3 diff commands omit the actual uncommitted build.** `git diff "$BASE_COMMIT"..HEAD` compares commits; before the human commit gate, `HEAD` normally still equals `BASE_COMMIT`, so tracked working-tree changes produce an empty patch, and `BASE_COMMIT` is never captured or persisted ([PLAN.md:229](PLAN.md:229)).
+### 3. [P1] “Must beat the baseline” still has no acceptance gate
 
-   Fix: Capture and persist `BASE_COMMIT=$(git rev-parse HEAD)` immediately before building, then use `git diff --stat "$BASE_COMMIT" --` and `git diff --binary "$BASE_COMMIT" --` to include staged and unstaged tracked changes.
+[PLAN.md:248](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:248) measures one configuration on one small question. It cannot establish:
 
-7. **High — large-diff handling silently converts cross-inspection into partial inspection.** “Largest N files” leaves `N` undefined, may skip small security-critical files, and permits reporting inspection complete despite explicitly uninspected changes ([PLAN.md:239](PLAN.md:239)).
+- Whether low effort preserves research quality.
+- Whether Sonnet workers beat Opus-low.
+- Whether input costs reverse the output-only comparison.
+- Whether either configuration misses important sources or caveats.
 
-   Fix: Chunk and inspect every textual changed file, or mark the inspection incomplete and require an explicit logged human opt-out before reaching the final gate.
+Correcting constants to match the same observation guarantees a calibration pass without testing predictive accuracy. Worse, completing this token-only exercise permits removing the experimental label while I3 remains untested. The Sonnet switch is immediately available despite its supposed prerequisite.
 
-8. **Medium — the downgrade notice still overstates hook isolation.** The plan correctly admits managed enterprise settings remain active, then categorically promises “no hooks”; managed hooks/settings are precisely the exception that prevents that guarantee ([PLAN.md:159](PLAN.md:159), [PLAN.md:256](PLAN.md:256)).
+**Fix:** Require a small matched comparison with recorded total usage and a predefined source/claim/caveat quality rubric, or retain experimental labeling and remove the “must beat” claim.
 
-   Fix: Say “no user/project custom hooks; managed enterprise settings may still apply” everywhere the isolation guarantee appears.
+### 4. [P1] Model inheritance makes the advertised configuration ambiguous
 
-9. **Medium — three acceptance cases do not test what they claim.** A non-zero `codex login status` is caught by the pre-Round-1 probe rather than testing launch-time fallback; masking only `timeout`, `gtimeout`, and `uuidgen` still leaves `/proc` or Python UUID sources; and dynamic sanitized reasons cannot be byte-identical across notice copies ([PLAN.md:323](PLAN.md:323), [PLAN.md:331](PLAN.md:331), [PLAN.md:332](PLAN.md:332)).
+[PLAN.md:27](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:27) omits the synthesizer’s model, but line 135 calls it “the Opus synthesizer.”
 
-   Fix: Simulate failure after a successful probe, mask every UUID source while separately testing host-timeout behavior, and compare the static notice template before reason substitution.
+Concrete consequences:
+
+- In a Sonnet session, the default is Sonnet workers **and Sonnet synthesis**, despite the repeated Opus-low baseline language.
+- In a Fable session, the guard pins workers to Opus but leaves synthesis on Fable.
+- With Sonnet workers and Fable synthesis, the illustrated output subtotal is **$4.90**, not $4.15.
+
+The guard also conflicts with the explicit Sonnet switch: “pin Opus in an expensive session” and “use Sonnet workers” both apply, without precedence. `effort=<level>` has no defined stage scope.
+
+**Fix:** Specify one resolution order for session inheritance, guard, model switch, and effort override; print concrete resolved models/efforts and calculate that configuration’s estimate.
+
+### 5. [P1] The session-model guard repeats the price-per-token inference
+
+[PLAN.md:36](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:36) automatically replaces the current workers’ model before performing the effort-first comparison it quotes. Calling this “operational” does not establish lower task cost.
+
+Fable 5.1 is not uniformly twice Opus’s price: its cached-input rate is lower. The primary guidance explicitly warns that workload determines the ranking. [Model-cost discussion](https://platform.claude.com/docs/en/about-claude/models/optimizing-for-cost-and-intelligence)
+
+Likewise, exceeding a context window does not establish that **Sonnet** workers beat **Opus** workers in this already-orchestrated workflow; the corpus result compares a different configuration against solo Fable.
+
+**Fix:** Present the guard as an explicit user-approved pricing policy, not a demonstrated saving, and require the same comparison for context-exceeding workloads.
+
+### 6. [P1] Coverage fields still allow the original silent omission
+
+[PLAN.md:114](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:114) improves reporting but does not independently check coverage. A reader can report every section reviewed, no sections skipped, and “none found” for caveats while missing a crucial limitation. None of the synthesizer’s specified triggers fires.
+
+“Thin coverage note” is subjective; a confident fabricated explanation passes. The revised schema also drops `source`, without specifying an alternative binding from each returned record to its source document. A heading alone is not sufficient provenance across multiple sources.
+
+**Fix:** Preserve source identity, reconcile reported coverage against a source-section inventory, and require source-level spot checks by the existing synthesizer; call self-reported coverage a warning signal rather than an omission control.
+
+### 7. [P1] The budget check is still disconnected from approved execution
+
+[PLAN.md:143](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:143) hardcodes `EST_OUTPUT = 370_000`, although users can edit counts and calibration must correct the constants. Increasing readers to twelve leaves the guard unchanged.
+
+The initial comparison also does not **reserve** synthesis capacity: workers may consume that headroom before synthesis starts. The plan never establishes whether `budget.remaining()` uses the same output-only accounting as `EST_OUTPUT`.
+
+The parent’s rejection and partial-run handling are real improvements; they do not fix these discrepancies.
+
+**Fix:** Derive the threshold from approved counts and calibrated constants in the runtime budget’s documented units, include retries, and enforce synthesis headroom before further worker launches.
+
+### 8. [P1] Finder coverage and retry approval remain underspecified
+
+[PLAN.md:99](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:99) requires an approved retry allowance “shown in the table,” but the table contains none. “One extra retry round” could launch one agent or all four.
+
+The two-finders-per-question rule lacks a question-to-finder assignment. Four finders can cover three to five questions if they each receive multiple questions, but that assignment and its workload implications are unspecified. A finder returning irrelevant candidates also avoids the zero-candidate retry trigger.
+
+**Fix:** Print the question/angle assignments and numeric retry allowance, define qualifying candidates per question, and reject count edits that make the required coverage impossible.
+
+### 9. [P2] Acceptance checks reward wording while missing behavior
+
+[PLAN.md:254](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:254) checks keywords rather than the failure cases above. Its arithmetic check enshrines the incorrect range. Its budget check passes the stale constant. Its sign-off check does not test conflicting overrides or invalid counts.
+
+The table itself contains “bound” twice despite acceptance forbidding that word. More substantively, “Total spend WILL exceed every figure” is false: a small actual run can cost less than these guessed subtotals, especially alternative configurations’ subtotals.
+
+**Fix:** Replace lexical checks with worked scenarios covering model inheritance, overrides, edited counts, retries, insufficient budget, and omitted caveats; say actual totals include additional costs but may differ substantially from estimates.
+
+**Remaining scope discrepancy:** The plan still promises a one-paragraph change while specifying tunables and README edits. These are deep-related, but the declared edit boundary should explicitly include them.
 
 VERDICT: REVISE
 ### Claude's response
 
-All 9 accepted, none rejected. Codex withdrew its round-1 auth claim unprompted and declined to
-re-litigate the locked README scope — both correct.
+All 9 accepted. No rejections.
 
-Finding 1 is fatal to the round-1 design and I should have caught it: Claude Code's Bash tool
-starts a fresh shell per call (working directory persists, shell state does not). `RUN_DIR`,
-`SID`, `TIMEOUT_CMD`, and the `run_reviewer` function cannot survive between rounds, and
-`trap 'rm -rf "$RUN_DIR"' EXIT` would delete the scratch directory the instant the initializing
-call returned. The revision drops shell-persistent state entirely: the orchestrator captures the
-absolute paths and ids as literals — exactly how the existing skill already handles `THREAD_ID` —
-records them in `LOG_FILE`, interpolates them verbatim into later calls, and cleans up explicitly.
-`umask 077` is likewise dropped as non-persistent; `mktemp -d` already yields a 0700 directory,
-which protects the files inside it.
+Finding 2 is checkable and I was wrong twice over. Finders+readers at the stated baseline are
+340k x $25/MTok = $8.50; a one-third-to-one-half reduction gives $5.00-$6.42, not the printed
+$5.60-$6.90. And the deeper objection is the one that matters: the published reduction is **cost per
+task**, which includes input, so it cannot be applied to an output-only subtotal at all. The bands
+were also already labelled as low-effort estimates and then discounted again for low effort —
+circular.
 
-Finding 6 is the second real bug: before the human commit gate `HEAD` still equals `BASE_COMMIT`,
-so `git diff "$BASE_COMMIT"..HEAD` is empty and the inspector would review nothing while reporting
-success. Corrected to `git diff "$BASE_COMMIT" --`, with `BASE_COMMIT` captured before the build
-and persisted.
+Finding 1 is the round's sharpest. I3 transfers across **model, architecture, and stage**, not just
+model: the DeepWideSearch result compares an orchestrator against a solo model, while this plan
+keeps eleven agents under both configurations. "Extraction is the least effort-sensitive stage" was
+another unsupported load-bearing assertion of exactly the kind I1 was deleted for. Both removed.
 
-Finding 2 is a plain empty-variable bug (`$TIMEOUT_CMD` unset makes `600` the command). Replaced
-with two literal command forms selected by the preflight rather than a spliced prefix.
+Finding 4 caught a contradiction I introduced in the same revision: `model` omitted by default, then
+"the Opus synthesizer" three sections later. In a Sonnet session the default resolves to Sonnet
+synthesis, which the plan's own baseline language denies. Resolved by pinning the synthesizer
+explicitly and printing the fully resolved configuration.
 
-Finding 4 additionally exposed something neither of us had specified: the Phase-3 inspector must be
-chosen by WHO BUILT, not by the Phase-2 reviewer. Codex-built code is already verified by Claude
-inside `codex-build`; Claude-built code should be inspected by Codex when capable. Stated
-explicitly now.
+Finding 3: acceptance row 7 was circular — correcting the constants to match the single observation
+that produced them guarantees a pass while testing nothing. Finding 6: I dropped `source` from the
+schema while claiming to strengthen provenance, a regression inside the fix. Finding 8: I referenced
+a retry allowance "shown in the table" that the table does not contain. Finding 9: the table used
+"bound" twice under an acceptance check forbidding it, and "Total spend WILL exceed every figure" is
+false for the alternative-configuration subtotals.
 
-Findings 3, 5, 7, 8, 9 accepted as written. Finding 8 matters more than "medium" here: this machine
-is on a Team plan, so managed enterprise settings are a live possibility rather than a hypothetical, and the isolation wording is corrected
-everywhere it appears.
+**Structural response rather than nine more patches.** Two rounds have produced the same failure
+mode: every dollar prediction generates a defect, because the plan keeps forecasting costs it has
+never measured. The revision **removes the predictions** instead of caveating them — no dollar range
+for any configuration the run will not execute, no transferred percentage discount, no "must beat"
+claim with no gate behind it. What remains is a printed resolved configuration, one arithmetic
+figure over openly-guessed bands, and the published results cited as the reason for the default
+rather than as evidence about this workload. The plan gets shorter, not longer.
 
 ## Round 3 — Codex
 
-The nine Round-2 findings are addressed. New material problems remain:
+**One material defect remains: the budget logic still promises synthesis after allowing workers to exhaust its budget.** The other major round-2 objections are substantially addressed.
 
-1. **High — `LOG_FILE` is being used as trusted executable state.** A resumed orchestrator recovers `RUN_DIR` and session IDs from a mutable repo file, then eventually executes `rm -rf <RUN_DIR>`; editing or planting that log can redirect cleanup or resume the wrong reviewer session ([PLAN.md:24](PLAN.md:24), [PLAN.md:120](PLAN.md:120)).
+I3 is now acceptable as motivation for an experimental default: it no longer supplies a savings prediction or asserts that one configuration wins. The resolved-configuration arithmetic, override precedence, scope boundary, and qualified coverage claims are implementable.
 
-   Fix: Treat the log as audit-only; before reuse or deletion, require a canonical path under the system temp root, current-user ownership, mode 0700, an expected name prefix, and a run-marker file.
+### [P1] The synthesis reserve is neither reserved nor protected
 
-2. **High — `CLAUDE_CAPABLE` still excludes required fallback dependencies.** Claude can pass its CLI/auth/flag probes yet lack every UUID source; `mktemp` can also fail, so the workflow may select Claude and complete Phases 0–1 before discovering the selected branch cannot run ([PLAN.md:53](PLAN.md:53), [PLAN.md:154](PLAN.md:154)).
+At [PLAN.md:172](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:172), another worker may launch whenever remaining budget is **at least** `SYNTH_RESERVE`.
 
-   Fix: Include UUID-source and private-scratch creation checks in `CLAUDE_CAPABLE` during every provider probe, cleaning up the probe directory immediately.
+Concrete failure:
 
-3. **High — format repair can turn “no review occurred” into a valid verdict.** The motivating failure is a reviewer refusing to review, but the repair then demands only a verdict line; it can produce `APPROVED` without ever supplying the required coverage or substantive analysis ([PLAN.md:254](PLAN.md:254), [PLAN.md:259](PLAN.md:259), [PLAN.md:351](PLAN.md:351)).
+- Remaining budget: 31k.
+- Synthesis reserve: 30k.
+- Next reader’s estimated consumption: 40k.
+- The check permits launching that reader, which can exhaust the budget before synthesis.
 
-   Fix: Permit format repair only after confirming `a1` contains a substantive review and, on the Claude path, conclusions for every required coverage area; otherwise classify `a1` as a failed attempt.
+Parallel workers make this worse: several launches can each observe sufficient remaining budget without accounting for work already running. The initial admission check does not prevent actual consumption exceeding guessed bands.
 
-4. **Critical — `BASE_COMMIT` still does not isolate the build being inspected.** By Phase 3, `PLAN.md`, `LOG_FILE`, and possibly pre-existing user changes are already uncommitted, so `git diff <BASE_COMMIT>` mixes those with Claude’s implementation and cannot establish which hunks the builder introduced ([PLAN.md:286](PLAN.md:286), [PLAN.md:297](PLAN.md:297)).
+Acceptance scenario 9 then requires “budget exhausted mid-run” **and** “synthesis still runs.” That contradicts D4’s stated behavior that exhaustion makes `agent()` throw. The partial-run handling at line 179 is the viable outcome, but the acceptance criterion demands something else.
 
-   Fix: Capture a complete pre-build worktree baseline—tracked diff, status, and untracked-file hashes—and give the inspector both pre- and post-build states so it reviews only the build delta.
+This needs an explicit design correction; a builder cannot satisfy both instructions as written.
 
-5. **Medium — untracked-file materialization is not safe for real filenames or file types.** “List and copy their contents” leaves spaces, newlines, symlinks, FIFOs, directories, and oversized files undefined; line-oriented output can corrupt the manifest or make the implementation choose unsafe shell expansion ([PLAN.md:306](PLAN.md:306)).
+**One-line fix:** Make synthesis headroom explicitly best-effort, check estimated pending/new worker consumption before dispatch, and require genuine exhaustion to return partial results without promising another synthesis launch.
 
-   Fix: Specify a NUL-delimited enumeration, quoted path-preserving copies of regular files only, explicit handling for symlinks/special files, and per-file size limits.
+### Nonblocking nits
 
-6. **Medium — the proof matrix does not exercise the two newest trust boundaries.** It lacks a test that state survives genuinely separate Bash calls without trusting a modified log, and its Phase-3 case starts from an unspecified worktree rather than one already dirty with plan/log and user changes ([PLAN.md:389](PLAN.md:389)).
+1. **Calibration has a narrower meaning than the label suggests.** [Acceptance row 7](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:260) records one useful observation; it does not validate constants across different questions, models, and effort settings. With comparative savings claims removed, this need not block implementation.  
+   **Fix:** Record the calibration’s question and resolved configuration, and retain the uncertainty qualification for other configurations.
 
-   Fix: Add adversarial log-tampering/cleanup tests and a Phase-3 case with pre-existing tracked and untracked changes that must be excluded from the builder delta.
+2. **The displayed assignment identifies finder IDs, not their distinct angles.** [PLAN.md:83](/Users/yanghu/Documents/AI_Workspace/tools/claudex-loop/PLAN.md:83) is straightforward for a competent builder to complete, but the final prose should make the assignment visible.  
+   **Fix:** Print each finder’s search angle beside its ID for each question.
+
+3. **“Fable’s cached-input rate is lower” needs a version qualifier.** This holds for Fable 5.1; the cited pricing table lists Fable 5 above Opus on cached input. [Pricing](https://platform.claude.com/docs/en/about-claude/pricing)  
+   **Fix:** Replace “Fable” with “Fable 5.1” in that caveat.
+
+Acceptance scenarios 1–6 now express concrete, assessable behavior. Scenario 7 is limited calibration, and scenario 9 is currently impossible under the plan’s own runtime assumptions. My remaining objection is that contradiction—not a demand for a comprehensive benchmark or perfect cost forecasting.
 
 VERDICT: REVISE
 ### Claude's response
 
-All 6 findings accepted. Two of the proposed *fixes* rejected in favour of simpler ones that
-remove the hazard instead of validating around it.
-
-**Finding 1 — accepted, fix simplified.** Codex proposed guarding the log-recovered path with five
-checks (temp-root canonicalisation, ownership, mode 0700, name prefix, run-marker). The cheaper and
-safer answer is to delete the dangerous operation: never `rm -rf` a path read back from a file. The
-orchestrator cleans up only a `RUN_DIR` it captured in the current session; if the session is gone,
-it cleans up nothing and the OS temp reaper handles it. The log keeps the path as audit text only,
-explicitly marked non-executable. Fewer moving parts, and no validation logic that can itself be
-wrong.
-
-**Finding 4 — accepted, fix redirected to an existing house mechanism.** Codex is right that by
-Phase 3 the worktree is already dirty with `PLAN.md`, `PLAN-REVIEW-LOG.md`, and possibly unrelated
-user edits, so `git diff <BASE_COMMIT>` mixes them into the build delta. Its proposed fix (capture a
-full pre-build worktree baseline including untracked-file hashes, hand the inspector both states) is
-a new subsystem. `codex-build` already solves this with a **clean-tree gate**: dirty worktree ->
-stop, commit or stash first. Extending that same gate to the Claude-built path makes
-`git diff <BASE_COMMIT> --` exactly the build delta with no baseline machinery at all. Adopted.
-
-**Finding 3 — accepted, and it invalidates a mechanism I introduced.** The format repair was added
-because a reviewer refused to emit a verdict; Codex correctly points out the repair would then
-launder that same refusal into a clean `APPROVED`. Repair is now gated on `a1` already containing a
-substantive review — and on the Claude path, conclusions for every required coverage area. A refusal
-is a failed attempt, never a repairable one.
-
-**Findings 2, 5, 6 — accepted as written.** Finding 2 in particular closes the same class of hole as
-round 1's finding 2: selecting a provider without proving the whole branch can run.
-
-Convergence note: 15 -> 9 -> 6 findings. Findings 3 and 4 are material; 5 is hardening against
-hostile filenames. This is round 4 of MAX_ROUNDS=5.
+All four accepted. The P1 was one label over two distinct bugs, and both are fixed:
+the dispatch check now requires `remaining >= SYNTH_RESERVE + BAND[stage]` (Codex's 31k/30k/40k
+case can no longer launch), and acceptance scenario 9 is split into 9a (headroom check fails ->
+worker skipped, synthesis runs) and 9b (genuine exhaustion -> partial results, no synthesis
+promised). Scenario 9 as written demanded something D4 forbids; that was mine to catch.
+The parallel-dispatch hole Codex named is stated as a caveat with bounded batches rather than
+papered over — bands are guesses, so no arithmetic over them can be a guarantee.
 
 ## Round 4 — Codex
 
-Not implementable yet. The read-only Claude flag set is now honestly scoped and I see no direct write path. The verdict-repair gate is also substantially fixed. Material control-flow and evidence defects remain.
+The plan is implementable as written by a competent engineer. No material findings remain.
 
-1. **High — cleanup instructions still contradict the audit-only rule.** The plan says persisted literals let a resumed session “recover” them, then forbids treating the log as executable state ([PLAN.md:22](PLAN.md:22), [PLAN.md:30](PLAN.md:30)). The substitution is safer than validation for the original log-tampering threat, but cleanup only after the final gate also leaves every earlier STOP orphaned, and an OS temp reaper is not guaranteed.
+The previous blocking defect is addressed: dispatch checks include the next worker’s estimated consumption, concurrency limits are explicitly best-effort, and genuine exhaustion returns partial results without promising synthesis. Acceptance scenarios 9a and 9b now describe distinct, achievable outcomes.
 
-   Fix: Remove all log-recovery language, clean the session-captured directory on every controlled terminal path, and document crash-orphan retention instead of promising OS cleanup.
+The three nits are also corrected: calibration retains its question/configuration scope, finder assignments show actual angles, and the cached-input caveat names Fable 5.1.
 
-2. **Critical — the clean-tree substitution immediately invalidates its own baseline.** After requiring an empty worktree, the plan records `BASE_COMMIT` by writing to `LOG_FILE`, dirtying the repository before the build; that log hunk will appear in the claimed builder-only diff ([PLAN.md:310](PLAN.md:310), [PLAN.md:318](PLAN.md:318), [PLAN.md:321](PLAN.md:321)). The gate is also weaker than a complete baseline for ignored files, which every listed Git command omits.
-
-   Fix: Make no repository writes between the clean gate and evidence capture; retain `BASE_COMMIT` in trusted session/scratch state, append it afterward, and either inventory ignored files pre/post or explicitly narrow the inspection guarantee to Git-visible files.
-
-3. **High — provider fallback and format repair collide in the attempt namespace.** Paths define only `a1=original` and `a2=repair`, but a Round-1 failure can launch another provider without consuming a round; no unique path remains, especially after a failed `a2`, so evidence can be overwritten or misclassified ([PLAN.md:113](PLAN.md:113), [PLAN.md:139](PLAN.md:139), [PLAN.md:275](PLAN.md:275)).
-
-   Fix: Give every process invocation a monotonically increasing attempt ID and record provider plus purpose (`review`/`repair`) separately.
-
-4. **Medium — auto-selection ignores capability recovery before Round 1.** If Codex is unavailable at Phase 0 but becomes capable at the mandatory pre-Round-1 re-probe, nothing reselects it; Claude remains selected despite “Codex remains the default wherever capable” and despite selection not freezing until launch ([PLAN.md:8](PLAN.md:8), [PLAN.md:90](PLAN.md:90), [PLAN.md:99](PLAN.md:99)).
-
-   Fix: In auto mode, recompute selection after every pre-Round-1 probe with Codex preferred; preserve only forced selections.
-
-5. **High — Phase-3 inspector capability and failure transitions are incomplete.** The Claude inspector requires `--add-dir`, yet that flag—and several other invoked flags—is absent from the “whole branch” probe; moreover, the allegedly exhaustive failure table is keyed to Phase-2 `REVIEWER_SELECTION` and does not define what happens when a selected Phase-3 inspector fails after probing ([PLAN.md:60](PLAN.md:60), [PLAN.md:103](PLAN.md:103), [PLAN.md:358](PLAN.md:358)).
-
-   Fix: Probe every mandatory Claude invocation flag, including `--add-dir`, and define Phase-3 launch/timeout/empty-output transitions with fallback or an explicit human opt-out.
-
-6. **Medium — evidence serialization still violates its own requirements.** The NUL-safe enumeration later writes filenames with raw `%s`, so newline/control-character names corrupt record boundaries; separately, `git diff --binary` embeds binary patches despite the instruction not to inline binaries ([PLAN.md:332](PLAN.md:332), [PLAN.md:342](PLAN.md:342), [PLAN.md:353](PLAN.md:353)).
-
-   Fix: Encode manifest paths unambiguously, such as shell-escaped or JSON strings, and use a non-binary diff while listing binary paths and sizes separately.
-
-VERDICT: REVISE
-### Claude's response
-
-All 6 accepted, no rejections. Codex confirmed the two round-3 substitutions were sound for their
-original threats and then found where each one leaks — which is the correct outcome of asking it to
-attack them specifically.
-
-Finding 2 is the sharp one and it is self-inflicted: the plan required an empty worktree, then
-immediately wrote `BASE_COMMIT` into `LOG_FILE`, dirtying the repo before the build so the log hunk
-would appear inside the "builder-only" diff. Fixed by making `RUN_DIR` (outside the repo) the
-holder of pre-build state and deferring every `LOG_FILE` append until after evidence capture. The
-ignored-files gap is closed by narrowing the guarantee rather than inventorying: the inspection
-covers git-visible files only, stated explicitly.
-
-Finding 1: the "recover from the log" phrasing was a leftover contradicting the audit-only rule.
-Removed. Cleanup now runs on every controlled terminal path including STOPs, and crash-orphan
-retention is documented honestly instead of hand-waved to an OS reaper.
-
-Finding 3 is a real namespace collision I created: provider fallback and format repair both need
-attempt slots and only `a1`/`a2` existed. Replaced with a monotonic attempt counter carrying
-provider and purpose.
-
-Findings 4, 5, 6 accepted as written. Finding 6's second half is a plain contradiction —
-`git diff --binary` inlines exactly what the neighbouring bullet says not to inline.
-
-Convergence: 15 -> 9 -> 6 -> 6. Round 5 is the last.
-
-## Round 5 — Codex
-
-All six round-4 findings are materially addressed. The plan is implementable by a competent engineer.
-
-Nonblocking cleanup items:
-
-- [PLAN.md:148](PLAN.md:148) retains obsolete final-gate/reaper wording. Delete it in favor of the authoritative every-terminal-path rule.
-- Command examples and outcome handling still use `a1`/`a2` filenames despite the new monotonic `t` namespace ([PLAN.md:208](PLAN.md:208), [PLAN.md:279](PLAN.md:279)). Mechanically convert them and associate repair with the current successful review launch.
-- `od -c` is not unambiguous: newline and literal `\n` filenames encode identically ([PLAN.md:381](PLAN.md:381)). Use hexadecimal output such as `od -An -tx1`.
-- `git diff --numstat` identifies binaries with `- -` but does not supply byte sizes ([PLAN.md:359](PLAN.md:359)). Compute sizes separately for acceptance row 24.
-
-These are localized implementation corrections with clear intended behavior, not unresolved design decisions.
+I3 now justifies an experimental starting choice without claiming measured savings. The remaining uncertainty is disclosed appropriately for this prose deliverable. Acceptance checks still need execution during implementation; this approval does not imply they have passed.
 
 VERDICT: APPROVED
 ### Claude's response
 
-APPROVED at round 5 of 5. All four non-blocking cleanups applied rather than shipped as known-stale
-text: the obsolete final-gate/reaper sentence in section 5 removed, the `a1`/`a2` filenames in the
-command examples and section 8 mechanically converted to the `t` namespace with repairs bound to
-their review launch, `od -An -c` replaced with `od -An -tx1` (Codex is right that `-c` renders a
-real newline and a literal backslash-n identically), and a separate byte-size measurement added for
-binaries since `--numstat` reports none.
+APPROVED at round 4 of 5, with Codex noting explicitly that approval does not imply the acceptance
+checks have passed — they are execution-time work.
 
-Convergence: 15 -> 9 -> 6 -> 6 -> 0. Twenty-one findings accepted outright, one factual claim
-rejected on verified evidence, three of Codex's proposed fixes replaced with simpler substitutions
-it subsequently attacked and cleared, and one scope demand (rewriting the README hero, mermaid,
-phase table, and invariant) rejected twice on the user's explicit Q4 decision.
+Convergence: 12 -> 9 -> 1 (+3 nits) -> 0. Twenty-two findings accepted, zero rejected.
 
----
+Two rounds changed the plan's direction rather than its wording, and both times Codex was right on
+a point I had argued for:
 
-## Act 3 — Build (Claude built, cross-inspected)
+- **Round 1 inverted the default.** I claimed effort trims only reasoning tokens, so model price was
+  the stronger lever on content-heavy stages. The effort documentation says effort *"affects all
+  tokens in the response"*. I also claimed the effort-vs-cheaper-model comparison was unmeasurable
+  here; it is published for this workload class (DeepWideSearch, 29% lower cost for low effort over
+  a Sonnet-worker orchestrator). Opus@low became the default; Sonnet workers became the opt-in.
+- **Round 2 removed the forecasting.** Every dollar prediction I wrote generated a defect, because
+  each one extrapolated from guessed bands and from benchmarks run on a different model in a
+  different architecture. The fix was deleting the predictions, not caveating them.
 
-Builder: Claude. Base commit `42b22aa` (clean tree). Build commit `64d4699` — 5 files,
-+654/-97. Spec deviations and beyond-spec fixes recorded below.
+Net: the plan ends up making far fewer claims than it started with, and ships labelled experimental
+until acceptance row 7 — a live calibration run — is executed. That is the honest state of it.
 
-### Proof matrix executed
-
-| Row | Case | Result |
-|---|---|---|
-| 1 | Claude Round 1 against `PLAN.md` | PASS — exit 0, 4479-byte substantive coverage review, last line matched the verdict regex exactly |
-| 2 | Round 2 resume, same SID | PASS — recalled its `--no-renames` finding verbatim |
-| 3 | Reviewer tool inventory | PASS — exactly Glob, Grep, Read |
-| 4 | Write attempt in reviewer session | PASS — refused, no file created |
-| 5 | `PATH` masked so codex absent | PASS — exit 127 masked / 0 unmasked |
-| 8 | Override validation specified | PASS — both skills |
-| 11 | Symlink at a fixed `/tmp` path | PASS — not followed, writes stayed in RUN_DIR |
-| 13 | Untracked file in manifest | PASS |
-| 14 | Downgrade template identical x3 | PASS — same SHA after whitespace normalisation |
-| 21 | Clean-tree gate on dirty worktree | PASS — gate stops |
-| 23 | No PLAN/LOG hunk in build delta | PASS (isolated repo) |
-| 24 | Binary file | PASS — "Binary files differ", no inlined blob |
-
-Counter-tests confirming the bugs the fixes remove: `git diff BASE..HEAD` returned **0 bytes**
-where `git diff BASE --` returned 126; and writing `BASE_COMMIT` into the log before capture
-**did** put a log hunk in the delta. Not run: rows 6, 9, 10, 12, 15a/b, 16, 17, 18, 19, 20, 22,
-25-30 — they need shims (fake codex, hostile filenames, tampered log, concurrent loops). Logged
-as untested per the scoping decision.
-
-### Beyond-spec fixes found by the live proof run
-
-Running the new Claude reviewer against `PLAN.md` found six defects in the mechanism itself:
-
-1. **Verdict counting was wrong** — the spec's "`VERDICT:` exactly once" rule would have flagged
-   the proof run's own valid review as malformed (3 substring hits from quoting the instruction).
-   Changed to an anchored line pattern. `PLAN.md` corrected in a follow-up commit.
-2. **Quota exhaustion** is a failure class the spec never named, and its reason arrives on
-   **stdout** (Claude) or the **events stream** (Codex), not stderr — so "sanitized first line of
-   stderr" would have logged nothing. Both observed live: opus hit its spend limit mid-proof, and
-   Codex hit its usage limit during reinspection.
-3. `--no-renames` missing from evidence commands (renames misalign `--numstat` fields).
-4. Clean-tree gate is check-then-act with no lock.
-5. Three missing failure-transition rows (fallback-also-fails, repair-launch failure, missing
-   `-status.txt`).
-6. `<reason>` sanitization must be redaction, not truncation — a first line bounds length, not
-   sensitivity.
-
-### Cross-inspection
-
-Codex round 1 returned 9 findings, all accepted: prompt files referenced but never written;
-`PLAN_FILE` not propagated to the build handoff; three contradictions in the Phase 3 sequence
-(cleanup-before-Phase-3, "implement directly" ordered before the gate, and a "no repository
-write" rule that forbade the build itself); timeouts saying "stop" while the table said retry;
-logging still sourcing stderr only; `codex-review` control text still asserting Codex after
-selecting Claude; the downgrade template drifting across its three copies; an out-of-scope edit
-to the protected invariant line; and a duplicated block I introduced by double-patching.
-
-Codex round 2 failed on its usage limit. **The new transition table was applied as written** —
-first inspector failure falls back to a fresh restricted Claude inspector — which found 4 more:
-`codex-review` had adopted none of the `PLAN_FILE` handoff fix, its Rounds 2..MAX blocks wrote
-`resume-prompt.txt` and then never read it (so the coverage addendum never reached a fallback
-reviewer from round 2 on), its transition table was missing the Round >= 2 STOP row, and
-`PLAN.md` still carried the old verdict rule. All fixed; skill parity verified by grep.
-
-Both inspection rounds spent (`MAX_INSPECTION_ROUNDS=2`). The second ran on the Claude fallback,
-which is a weaker inspector than Codex — stated rather than glossed.
-
-## Act 3b — Branch-selection test (requested by the user)
-
-Two layers tested: the probe logic against shimmed `codex` binaries, and whether a model *reading
-the skill* actually picks the right branch. The second layer is the one that matters — the skill is
-prose, so the real failure mode is a model grabbing the wrong command block.
-
-### Layer 1 — probe logic (shims: absent / v0.120.3 / logged-out / passes-probe-then-fails-exec)
-
-| Scenario | Result |
-|---|---|
-| Both capable | `REVIEWER_SELECTION=codex`, no notice |
-| Codex absent (claude on PATH) | `claude` + notice "CLI absent" |
-| Codex v0.120.3 (< 0.130) | `claude` + notice "version 0.120.3 < 0.130" |
-| Codex logged out | `claude` + notice "not authenticated" |
-| `reviewer=codex` forced, codex absent | STOP, exit 2 |
-| `reviewer=bogus` | ERROR, exit 3 — does not default |
-| Codex absent at probe 1, present at probe 2 (auto) | reselects `codex` |
-| Same, `reviewer=claude` forced | stays `claude` |
-
-### Layer 2 — model reading the skill (fresh restricted sessions, expected answer not hinted)
-
-| Scenario | Selection | Block chosen | First binary |
-|---|---|---|---|
-| Both capable | codex | `Round 1 — REVIEWER_SELECTION=codex` | `codex` |
-| Codex absent | claude | `Round 1 — REVIEWER_SELECTION=claude` | `claude` |
-| Codex v0.120.3 | claude | `...=claude` | `claude` |
-| Both capable, `reviewer=claude` | claude | `...=claude` | `claude` |
-| Codex absent, `reviewer=codex` | STOP | NONE | NONE |
-
-`codex-review` tested separately (it had drifted): both-capable picks codex, codex-absent picks
-claude, and both branches source Rounds 2..MAX from `"$(cat <RUN_DIR>/resume-prompt.txt)"` —
-confirming the round-2 inspection fix landed.
-
-Five for five on each skill. The "two adjacent bash blocks, wrong one picked" risk did not
-materialise in any scenario; the hard-conditioned block titles appear to carry the weight.
-
-### Defect found and fixed by this test
-
-`reviewer=claude` with Codex fully capable printed **"Codex unavailable ()."** — a false statement
-with an empty reason. The skill only ever specified the notice for genuine unavailability and said
-nothing about a forced selection. Both skills now distinguish the two: forced Claude prints
-"Reviewer: Claude (you asked for it; Codex is available)" with the same trade-off disclosure, and
-the "Codex unavailable" notice is reserved for actual incapability. Re-tested: scenario S4 now
-prints the forced-selection wording.
-
-Acceptance rows 5, 7, 8, 25, 26 are now executed rather than logged as untested.
-
-Aside worth recording: while writing this harness I hit the masked-exit-status bug twice —
-`cmd | head` reporting `head`'s status — which is exactly the defect Codex flagged in round 2 and
-the reason the skill now forbids pipelines around reviewer launches.
+Standing flag for the human: this outcome overturns the Q2 and Q3 decisions locked in Phase 1
+(Sonnet workers as the default). The user chose Sonnet over Haiku as the worker tier, which is a
+different question from Sonnet-workers versus Opus-at-low, and the evidence on the second question
+only surfaced during review.

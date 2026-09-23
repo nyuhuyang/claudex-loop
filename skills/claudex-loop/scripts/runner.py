@@ -937,7 +937,9 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
                   status="running", requested_model=ctx["model"], requested_effort=ctx["effort"])
     try:
         if ctx["stop"].is_set():
-            raise RunError("Panel stopped before this worker launched.")
+            record.update(status="cancelled", error="Panel stopped before this worker launched.")
+            save(child / "result.json", record)
+            return record
         cwd = ctx["repo"]
         if worker["kind"] == "web":
             cwd = child / "cwd"
@@ -1077,6 +1079,8 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
         stop_reason = "Panel was interrupted."
     if stop_reason:
         ctx["stop"].set()
+        for future in futures:
+            future.cancel()
         for proc in list(ctx["live"]):
             kill_tree(proc)
     pool.shutdown(wait=True, cancel_futures=True)

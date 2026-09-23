@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -798,7 +799,7 @@ class PanelTests(unittest.TestCase):
         code, record, _, _ = self.launch()
         self.assertEqual(code, 0, record)
         attempts = next(w for w in record["workers"] if w["id"] == "w3")["read_confinement_attempts"]
-        self.assertEqual(attempts, [{"tool": "Read", "target": "/etc/hosts", "succeeded": False}])
+        self.assertEqual(attempts, [{"tool": "Read", "target": str(Path("/etc/hosts")), "succeeded": False}])
 
     def test_invalid_worker_responses_fail_that_worker_and_make_the_panel_partial(self):
         good = claim("https://b.example/y", "alpha works")
@@ -891,6 +892,20 @@ class PanelTests(unittest.TestCase):
         for worker, mtime in beats.items():
             self.assertEqual((self.fake / f"{worker}.beat").stat().st_mtime, mtime, f"{worker} still running")
 
+    def test_stopped_before_launch_is_cancelled_without_starting_process(self):
+        stop = threading.Event()
+        stop.set()
+        ctx = {"run_dir": self.artifacts, "provider": "claude", "harness": "claude-code",
+               "model": None, "effort": None, "stop": stop}
+        self.artifacts.mkdir()
+        with patch.object(runner, "execute") as execute:
+            record = runner.run_panel_worker(self.spec["workers"][0], "prompt", 1, ctx)
+        self.assertEqual(record["status"], "cancelled")
+        self.assertEqual(record["error"], "Panel stopped before this worker launched.")
+        self.assertEqual(json.loads((Path(record["artifacts"]) / "result.json").read_text()), record)
+        execute.assert_not_called()
+        self.assertFalse((Path(record["artifacts"]) / "command.json").exists())
+
     def test_aggregate_deadline_kills_workers_and_cancels_queue(self):
         for worker in self.SESSIONS:
             (self.fake / f"{worker}.sleep").write_text("30")
@@ -923,6 +938,51 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(record["error"], "Panel was interrupted.")
         self.assert_no_live_workers(["w1", "w2", "w3"])
+
+    def test_interrupt_cancels_queued_workers_before_killing_running_worker(self):
+        for worker in self.SESSIONS:
+            (self.fake / f"{worker}.sleep").write_text("30")
+
+        def interrupt_after_launch(pending, timeout):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not (self.fake / "w1.beat").exists():
+                time.sleep(0.05)
+            self.assertTrue((self.fake / "w1.beat").exists())
+            raise KeyboardInterrupt
+
+        cancelled = []
+        cancellations_at_kill = []
+        original_cancel = runner.concurrent.futures.Future.cancel
+        original_kill = runner.kill_tree
+
+        def track_cancel(future):
+            result = original_cancel(future)
+            if result:
+                cancelled.append(future)
+            return result
+
+        def track_kill(proc):
+            cancellations_at_kill.append(len(cancelled))
+            original_kill(proc)
+
+        started = time.monotonic()
+        with patch.object(runner, "wait_workers", side_effect=interrupt_after_launch), \
+             patch.object(runner.concurrent.futures.Future, "cancel", track_cancel), \
+             patch.object(runner, "kill_tree", side_effect=track_kill):
+            code, record, _, _ = self.launch(dict(self.spec, concurrency=1))
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["error"], "Panel was interrupted.")
+        self.assertTrue(cancellations_at_kill)
+        self.assertTrue(all(count == 2 for count in cancellations_at_kill))
+        statuses = {worker["id"]: worker["status"] for worker in record["workers"]}
+        self.assertEqual([statuses[worker] for worker in ("w2", "w3")], ["cancelled", "cancelled"])
+        for index, worker in enumerate(("w2", "w3"), 2):
+            self.assertFalse((self.fake / f"{worker}.argv.json").exists())
+            self.assertNotIn("artifacts", next(w for w in record["workers"] if w["id"] == worker))
+            self.assertFalse(list(Path(record["artifacts"]).glob(f"w{index:02d}-*")))
+        self.assert_no_live_workers(["w1"])
 
     def codex_web_spec(self):
         return dict(self.spec, workers=self.spec["workers"][:2])

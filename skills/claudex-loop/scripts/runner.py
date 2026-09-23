@@ -60,7 +60,7 @@ PANEL_LIMITS = {"workers": 8, "concurrency": 4, "wall_min": 60, "wall_max": 3600
                 "limitation": 300, "list_items": 10, "list_item": 300}
 # Claude CLI versions whose --restricted read confinement passed the live canary recorded in
 # VALIDATION.md. Repo workers on any other version need an explicit, recorded override.
-VALIDATED_READ_CONFINEMENT_CLI: tuple[str, ...] = ()
+VALIDATED_READ_CONFINEMENT_CLI: tuple[str, ...] = ("2.1.280",)
 CLAIM_FIELDS = ("id", "question_id", "claim", "source_type", "locator", "excerpt",
                 "confidence", "limitation")
 # Lengths are enforced by validate_panel_response; the CLI schema carries only structure.
@@ -337,8 +337,8 @@ def kill_tree(proc: subprocess.Popen) -> None:
     else:
         try:
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        except (ProcessLookupError, PermissionError):
+            pass  # group already gone; macOS reports EPERM while the exited leader is a zombie
 
 
 def execute(argv: list[str], prompt: str, repo: Path, run_dir: Path, timeout: int,
@@ -670,7 +670,8 @@ def _inside(repo: Path, value: str) -> bool:
 
 def confinement_findings(calls: list, kind: str, repo: Path) -> tuple[list, list]:
     """Return (outside attempts, violations). A violation is an outside call that succeeded."""
-    allowed = set(PANEL_TOOLS[kind].split(","))
+    # With --json-schema the CLI delivers the answer through its internal StructuredOutput tool.
+    allowed = set(PANEL_TOOLS[kind].split(",")) | {"StructuredOutput"}
     path_keys = {"Read": ("file_path",), "Glob": ("path", "pattern"), "Grep": ("path",)}
     attempts, violations = [], []
     for call in calls:
@@ -689,6 +690,13 @@ def confinement_findings(calls: list, kind: str, repo: Path) -> tuple[list, list
 
 def _norm(text: str) -> str:
     return " ".join(str(text).split()).casefold()
+
+
+def _norm_markdown(text: str) -> str:
+    """WebFetch returns markdown while workers quote rendered text; strip formatting on both sides."""
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", str(text))
+    text = re.sub(r"(?m)^\s*(?:>+|#+)\s?", "", text)
+    return _norm(re.sub(r"[`*]", "", text))
 
 
 def _norm_url(url: str) -> str:
@@ -716,12 +724,12 @@ def verify_claims(claims: list, calls: list, kind: str, repo: Path) -> list[str]
                 if isinstance(status, int) and not 200 <= status <= 299:
                     continue  # an error page is not evidence for the claimed source
                 body = call["text"] + "\n" + str(structured.get("result", ""))
-                fetches.append((urls, _norm(body)))
+                fetches.append((urls, _norm_markdown(body)))
             elif call["name"] == "WebSearch":
                 blob = call["text"] + json.dumps(call["structured"] or "")
                 seen |= {_norm_url(url) for url in re.findall(r"https?://[^\s\"'<>\\\])]+", blob)}
         for claim in claims:
-            locator, excerpt = _norm_url(claim["locator"]), _norm(claim["excerpt"])
+            locator, excerpt = _norm_url(claim["locator"]), _norm_markdown(claim["excerpt"])
             bodies = [body for urls, body in fetches if locator in urls]
             statuses.append("retrieved" if any(excerpt in body for body in bodies) else
                             "unverified" if bodies or locator in seen else "mismatch")

@@ -483,6 +483,11 @@ def stream(session, calls, response, model="claude-test"):
         if structured is not None:
             result["tool_use_result"] = structured
         events.append(result)
+    # Claude Code 2.1.280 delivers --json-schema output through an internal tool call.
+    events.append({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_final", "name": "StructuredOutput", "input": response}]}})
+    events.append({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_final", "content": "Structured output provided successfully"}]}})
     events.append({"type": "result", "subtype": "success", "is_error": False, "session_id": session,
                    "structured_output": response, "modelUsage": {model: {}}, "usage": {"input_tokens": 1}})
     return "\n".join(json.dumps(event) for event in events) + "\n"
@@ -637,6 +642,15 @@ class PanelTests(unittest.TestCase):
                  (claim("https://d.example/denied", "hidden text"), "mismatch")]
         statuses = runner.verify_claims([c for c, _ in cases], calls, "web", self.repo)
         self.assertEqual(statuses, [expected for _, expected in cases])
+
+    def test_web_excerpts_match_rendered_markdown(self):
+        body = ('## Deprecation\n\n**Deprecated since version 3.12:**\n> Use [`datetime.now()`](#datetime.now '
+                '"datetime.now") with [`UTC`](#UTC) instead.')
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w1"], [fetch("https://docs.example/dt", body)],
+                                                 response()))["calls"]
+        claims = [claim("https://docs.example/dt", "Deprecated since version 3.12: Use datetime.now() with UTC instead."),
+                  claim("https://docs.example/dt", "removed in Python 3.14", claim_id="c2")]
+        self.assertEqual(runner.verify_claims(claims, calls, "web", self.repo), ["retrieved", "unverified"])
 
     def test_repo_citation_statuses_use_what_the_worker_read(self):
         (self.repo / "docs").mkdir()

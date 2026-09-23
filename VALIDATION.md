@@ -1,11 +1,15 @@
 # Validation — bidirectional loop
 
+## Antigravity provider status (2026-09-23)
+
+The runner now has fake-`agy` contract coverage for isolated profile preflight, Gemini-only model policy, stdin stream-json transport, terminal failure signals, transcript tool audit, exact-URL citation binding, per-worker provider settings, panel transcript cleanup, plan-only review and resume identity, and the build approval gate. These tests use temporary `HOME` directories and make no live agy or network calls. The live profile canary is **pending**: a user must log in to the separate profile, then verify stdin prompt delivery and `--json-schema`, deny rules against write/command/outside reads (absolute, `../`, symlink), successful `read_url`, no workspace hooks, and the transcript shape. A live agy plan review and mixed-provider panel are also pending. No live agy assurance is claimed from the fake tests.
+
 Development date: 2026-09-06. Tests run in disposable fixtures; production repositories were not built or modified by live smoke tests.
 
 ## Automated checks
 
 - `python scripts/validate.py`: active skill frontmatter, local references, both provider manifests and shared-runner presence.
-- `python -m unittest discover -s tests -v`: **23 passing tests** with fake CLI executables and real temporary Git repositories, without model calls.
+- `python -m unittest discover -s tests -v`: **81 passing tests** with fake CLI executables and real temporary Git repositories, without model calls.
 - Codex Skill Creator validator: all three active skills.
 - Codex Plugin Creator validator: `.codex-plugin/plugin.json`.
 - `git diff --check`.

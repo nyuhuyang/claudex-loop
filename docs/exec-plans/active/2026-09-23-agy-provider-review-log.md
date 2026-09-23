@@ -39,3 +39,16 @@ Limitations: no files edited, no tests or live agy commands run; raw canary reco
 
 ## Resolution
 APPROVED in 4 rounds (12 findings: 12 accepted, 0 rejected). Awaiting user sign-off; implementation not authorised yet.
+
+## Act 3 — Build
+### Round 1 — Codex build
+Codex (thread 01a0ce4a-ece7-7683-8c32-c5dae459a274) implemented Approach steps 1-12: `agy-profile`, preflight, stdin stream-json transport, stream parser, transcript audit and citation verification, panel transcript cleanup, per-worker provider settings, plan hash in the panel digest, role-separated provider sets, `cross_provider_plan_only` rejected by `check_approval`, provider adapter table, docs; 11 fake-agy tests. Reported no deviations.
+### Claude's verdict
+Full diff read; proof rerun by Claude: validate OK, 76 tests OK, `--help` OK, `git diff --check` clean. Fix requested:
+- F1 blocker: preflight scans all of `.gemini`; a real profile has `antigravity-cli/cli.log` (symlink), `builtin/skills`, and a 0-byte `config/mcp_config.json`, so preflight would always fail after login. Scope the scan to `.gemini/config`, accept empty MCP config, refuse non-empty `antigravity-cli/plugins`.
+- F2 high: multi-call planner responses give every call the first result's text, allowing a false `retrieved`. Such results become non-evidence (`unverified`).
+- F3 `--agy-effort` choices limited to low/medium/high; F4 login probe timeout 30s; F5 top-level `shlex` import; F6 drop duplicate version check in review.
+### Round 2 — Codex fix
+F1-F6 fixed: config scan limited to `.gemini/config` (realistic logged-in layout passes; hooks/skills under config, non-empty `antigravity-cli/plugins`, configured MCP servers still fail); multi-call transcript results marked `evidence_ambiguous` (URL seen, never `retrieved`); `--agy-effort` low/medium/high; login probe 30s; top-level `shlex`; single version probe in review. Five new tests.
+### Claude's verdict
+Diff re-read; proof rerun by Claude: validate OK, 81 tests OK, `--help` OK, `git diff --check` clean. Claude corrected the VALIDATION.md test count (76 → 81). Accepted; ready for the human diff gate. Pending after commit: live profile canary (needs the user's one-time agy login) and live runs.

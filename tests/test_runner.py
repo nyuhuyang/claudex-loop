@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -124,6 +125,84 @@ else:
     if case == 'turn_failed':
         value.update(subtype='error_during_execution',is_error=True)
     print(json.dumps([{'type':'system','subtype':'init'}, value] if case == 'array' else value))
+'''
+
+FAKE_AGY = r'''
+import json, os, pathlib, re, sqlite3, sys
+home = pathlib.Path(os.environ['HOME'])
+case = os.environ.get('FAKE_AGY_CASE', 'ok')
+if '--version' in sys.argv:
+    if case == 'version_drift':
+        marker = pathlib.Path(os.environ['FAKE_AGY_DIR']) / 'version.count'
+        count = int(marker.read_text()) + 1 if marker.exists() else 1
+        marker.write_text(str(count))
+        print('9.9.9' if count > 1 else '1.2.9')
+    else:
+        print('9.9.9' if case == 'version' else '1.2.9')
+    sys.exit(0)
+if sys.argv[1:3] == ['mcp', 'list']:
+    print('Server configured' if case == 'mcp' else 'No MCP servers configured.')
+    sys.exit(0)
+if sys.argv[1:3] == ['plugin', 'list']:
+    print('Plugin configured' if case == 'plugin' else 'No imported plugins.')
+    sys.exit(0)
+if sys.argv[1:3] == ['-p', '/usage']:
+    print('Authentication required' if case == 'auth' else 'Gemini remaining quota: 100%')
+    sys.exit(0)
+payload = json.loads(sys.stdin.readline())
+prompt = payload['message']['content']
+worker_match = re.search(r'^WORKER ID: (\S+)$', prompt, re.M)
+worker = worker_match.group(1) if worker_match else 'review'
+data = pathlib.Path(os.environ['FAKE_AGY_DIR'])
+(data / (worker + '.argv.json')).write_text(json.dumps(sys.argv), encoding='utf-8')
+(data / (worker + '.stdin.json')).write_text(json.dumps(payload), encoding='utf-8')
+(data / (worker + '.cwd.txt')).write_text(os.getcwd(), encoding='utf-8')
+(data / (worker + '.home.txt')).write_text(str(home), encoding='utf-8')
+session = {'w1':'11111111-1111-4111-8111-111111111111',
+           'w2':'22222222-2222-4222-8222-222222222222',
+           'review':'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'}[worker]
+if case == 'wrong_id':
+    session = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+model = sys.argv[sys.argv.index('--model') + 1]
+url = 'https://example.org/' + worker
+claim = {'id':'c1', 'question_id':'q1', 'claim':'A supported statement.',
+         'source_type':'web', 'locator':url, 'excerpt':'Verified source text',
+         'confidence':'high', 'limitation':''}
+value = ({'verdict':'APPROVED', 'summary':'Plan checked.', 'findings':[],
+          'coverage':['supplied plan body'], 'limitations':[]} if worker == 'review' else
+         {'summary':'Research complete.', 'claims':[claim], 'coverage':['angle'], 'limitations':[]})
+tool = 'view_file' if case == 'hostile_tool' else 'read_url_content'
+entries = [] if worker == 'review' else [{'name':tool, 'args':{'Url':url, 'toolAction':'read'}}]
+root = home / '.gemini' / 'antigravity-cli'
+logs = root / 'brain' / session / '.system_generated' / 'logs'
+logs.mkdir(parents=True, exist_ok=True)
+transcript = [{'step_index':0,'source':'USER_EXPLICIT','type':'USER_INPUT','content':prompt}]
+if entries:
+    transcript += [{'step_index':1,'source':'MODEL','type':'PLANNER_RESPONSE','tool_calls':entries},
+                   {'step_index':2,'source':'MODEL','type':'GENERIC','content':'Verified source text'}]
+if case != 'missing_transcript':
+    (logs / 'transcript_full.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in transcript), encoding='utf-8')
+conversations = root / 'conversations'
+conversations.mkdir(exist_ok=True)
+(conversations / (session + '.db')).write_text('test', encoding='utf-8')
+with sqlite3.connect(root / 'conversation_summaries.db') as db:
+    db.execute('CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id TEXT PRIMARY KEY)')
+    db.execute('INSERT OR REPLACE INTO conversation_summaries VALUES (?)', (session,))
+print(json.dumps({'event':'init','conversation_id':session,'init':
+                  {'model':model,'cwd':os.getcwd(),'tools':[],'permission_mode':'request-review'}}))
+if entries:
+    print(json.dumps({'event':'step_update','step_update':{'conversation_id':session,
+                      'step_index':1,'state':'DONE','step_type':'tool',
+                      'tool_name':'search_web' if case == 'stream_disagree' else tool}}))
+if case == 'denied':
+    print('jetski: no output produced — tool permission auto-denied', file=sys.stderr)
+if case == 'api_error':
+    print('AGY_ERROR: {"message":"unavailable"}', file=sys.stderr)
+print(json.dumps({'event':'result','result':{'conversation_id':session,
+                  'status':'ERROR' if case == 'api_error' else 'SUCCESS',
+                  'response':'' if case == 'denied' else json.dumps(value),
+                  'structured_output':value,'usage':{'input_tokens':3}}}))
+sys.exit(3 if case == 'api_error' else 0)
 '''
 
 
@@ -1068,6 +1147,312 @@ class PanelTests(unittest.TestCase):
         code, _, _, error = self.launch(self.codex_web_spec(), host="claude", validated=False)
         self.assertEqual(code, 1)
         self.assertIn("live web-panel validation", error)
+
+
+class AgyTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="claudex-agy-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.home = self.root / "home"
+        self.home.mkdir()
+        self.profile = self.home / ".claudex-loop" / "agy-home"
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.plan = self.root / "plan.md"
+        self.plan.write_text("# Plan\nSecret plan detail.\n", encoding="utf-8")
+        self.artifacts = self.root / "runs"
+        self.fake = self.root / "fake"
+        self.fake.mkdir()
+        self.agy = self.root / "agy.py"
+        self.agy.write_text(FAKE_AGY, encoding="utf-8")
+        self.claude = self.root / "claude.py"
+        self.claude.write_text(FAKE_CLI, encoding="utf-8")
+        self.spec = {"questions": [{"id": "q1", "text": "Is the source verified?"}],
+                     "workers": [{"id": "w1", "kind": "web", "provider": "agy",
+                                  "angle": "official", "question_ids": ["q1"]},
+                                 {"id": "w2", "kind": "web", "provider": "agy",
+                                  "angle": "independent", "question_ids": ["q1"]}],
+                     "wall_clock_seconds": 60}
+        self.spec_path = self.root / "spec.json"
+        self.spec_path.write_text(json.dumps(self.spec), encoding="utf-8")
+        with patch.dict(os.environ, {"HOME": str(self.home)}), \
+             patch.object(runner.tempfile, "gettempdir", return_value=str(self.root)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            runner.create_agy_profile()
+
+    def call(self, mode="panel", case="ok", extra=()):
+        output, error = io.StringIO(), io.StringIO()
+        def prefix(name, override=None):
+            return [sys.executable, str(self.agy if name == "agy" else self.claude)]
+        args = [mode, "--host", "codex", "--repo", str(self.repo), "--plan", str(self.plan),
+                "--artifacts", str(self.artifacts), *extra]
+        if mode == "panel":
+            args += ["--spec", str(self.spec_path)]
+        elif mode == "review":
+            args += ["--provider", "agy"]
+        old = set(self.artifacts.glob("*/result.json")) if self.artifacts.exists() else set()
+        with patch.object(runner, "cli_prefix", side_effect=prefix), \
+             patch.dict(os.environ, {"HOME": str(self.home), "FAKE_AGY_CASE": case,
+                                    "FAKE_AGY_DIR": str(self.fake), "FAKE_PANEL_DIR": str(self.fake)}), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = runner.main(args)
+        new = set(self.artifacts.glob("*/result.json")) - old if self.artifacts.exists() else set()
+        record = json.loads(next(iter(new)).read_text()) if new else None
+        return code, record, output.getvalue(), error.getvalue()
+
+    def panel(self, case="ok", extra=()):
+        code, _, output, error = self.call(case=case, extra=("--dry-run", *extra))
+        self.assertEqual(code, 0, error)
+        payload = json.loads(output)["payload_sha256"]
+        return self.call(case=case, extra=("--payload-sha256", payload, *extra))
+
+    def test_profile_and_panel_transport_citations_cleanup(self):
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["assurance"], "cross_provider_panel")
+        self.assertEqual({w["provider"] for w in record["workers"]}, {"agy"})
+        self.assertEqual(record["coverage"]["q1"], {"w1": 1, "w2": 1})
+        self.assertTrue(all(w["conversation_id"] == w["session_id"] and
+                            w["permission_mode"] == "request-review" for w in record["workers"]))
+        for worker in ("w1", "w2"):
+            argv = json.loads((self.fake / (worker + ".argv.json")).read_text())
+            self.assertEqual(argv[1:5], ["--input-format", "stream-json", "--output-format", "stream-json"])
+            self.assertTrue(all(x not in argv for x in ("--agent", "--mode", "--continue", "--sandbox",
+                                                          "--add-dir", "--dangerously-skip-permissions")))
+            self.assertNotIn("WORKER ID", json.dumps(argv))
+            self.assertEqual(Path((self.fake / (worker + ".home.txt")).read_text()), self.profile)
+            self.assertNotEqual(Path((self.fake / (worker + ".cwd.txt")).read_text()), self.repo)
+            self.assertTrue((self.fake / (worker + ".stdin.json")).exists())
+            child = next(self.artifacts.glob(f"*/w*-{worker}"))
+            self.assertTrue((child / "transcript_full.jsonl").exists())
+            session = PanelTests.SESSIONS[worker]
+            self.assertFalse((self.profile / ".gemini/antigravity-cli/brain" / session).exists())
+            root = self.profile / ".gemini/antigravity-cli"
+            self.assertFalse((root / "conversations" / (session + ".db")).exists())
+            with sqlite3.connect(root / "conversation_summaries.db") as db:
+                self.assertIsNone(db.execute("SELECT 1 FROM conversation_summaries WHERE conversation_id = ?",
+                                             (session,)).fetchone())
+        self.assertIn("gemini-3.1-pro-high", json.dumps(record["worker_settings"]))
+
+    def test_agy_denial_api_error_hostile_tool_and_missing_transcript_fail_closed(self):
+        for case in ("denied", "api_error", "hostile_tool", "missing_transcript", "stream_disagree"):
+            with self.subTest(case=case):
+                code, record, _, _ = self.panel(case)
+                self.assertEqual(code, 1)
+                if case in ("hostile_tool", "missing_transcript", "stream_disagree"):
+                    self.assertEqual(record["status"], "failed")
+                    self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+                else:
+                    self.assertEqual(record["status"], "partial")
+
+    def test_agy_preflight_failures_and_model_policy(self):
+        for case in ("mcp", "plugin", "auth", "version"):
+            with self.subTest(case=case):
+                code, record, _, error = self.panel(case)
+                self.assertEqual(code, 1)
+                self.assertIsNone(record)
+                self.assertIn("agy", error)
+        code, record, _, error = self.call(extra=("--dry-run", "--agy-model", "claude-test"))
+        self.assertEqual(code, 1)
+        self.assertIn("gemini-", error)
+        settings = self.profile / ".gemini/antigravity-cli/settings.json"
+        settings.write_text("{}", encoding="utf-8")
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 1)
+        self.assertIn("settings", error)
+
+    def test_profile_customization_and_permissions_fail_preflight(self):
+        profile = self.profile
+        hooks = profile / ".gemini/config/hooks.json"
+        hooks.parent.mkdir(parents=True)
+        hooks.write_text("{}", encoding="utf-8")
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("forbidden customization", error)
+        hooks.unlink()
+        profile.chmod(0o755)
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 1)
+        self.assertIn("mode 0700", error)
+
+    def test_profile_mcp_config_and_workspace_ancestor_refuse_launch(self):
+        config = self.profile / ".gemini/config/mcp_config.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"mcpServers":{"unsafe":{}}}', encoding="utf-8")
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("MCP servers", error)
+        config.unlink()
+        (self.root / ".agents").mkdir()
+        code, record, _, _ = self.panel()
+        self.assertEqual(code, 1)
+        self.assertTrue(all(w["status"] == "failed" for w in record["workers"]))
+        self.assertFalse((self.fake / "w1.argv.json").exists())
+
+    def test_realistic_logged_in_profile_passes_and_customizations_fail(self):
+        cli_root = self.profile / ".gemini/antigravity-cli"
+        log = cli_root / "log/cli-20260923.log"
+        log.parent.mkdir(parents=True)
+        log.write_text("", encoding="utf-8")
+        (cli_root / "cli.log").symlink_to("log/cli-20260923.log")
+        skill = cli_root / "builtin/skills/x/SKILL.md"
+        skill.parent.mkdir(parents=True)
+        skill.write_text("bundled skill", encoding="utf-8")
+        config = self.profile / ".gemini/config"
+        config.mkdir()
+        mcp = config / "mcp_config.json"
+        mcp.write_text("", encoding="utf-8")
+        runner.agy_profile_check(self.profile)
+        mcp.write_text(" \n\t", encoding="utf-8")
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 0, (record, error))
+        for path in (config / "hooks.json", config / "skills" / "x", cli_root / "plugins" / "x",
+                     self.profile / "AGENTS.md"):
+            with self.subTest(path=path):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("customization", encoding="utf-8")
+                code, record, _, error = self.panel()
+                self.assertEqual(code, 1)
+                self.assertIsNone(record)
+                self.assertIn("agy", error)
+                path.unlink()
+        mcp.write_text('{"mcpServers":{"unsafe":{}}}', encoding="utf-8")
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("MCP servers", error)
+
+    def test_multi_call_transcript_never_binds_first_result_to_second_url(self):
+        session = PanelTests.SESSIONS["w1"]
+        path = runner.agy_transcript_path(self.profile, session)
+        path.parent.mkdir(parents=True)
+        url_a, url_b = "https://example.org/a", "https://example.org/b"
+        rows = [{"step_index": 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                 "tool_calls": [{"name": "read_url_content", "args": {"Url": url_a}},
+                                {"name": "read_url_content", "args": {"Url": url_b}}]},
+                {"step_index": 2, "source": "MODEL", "type": "GENERIC",
+                 "content": "Only A contains this excerpt."}]
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        calls = runner.agy_transcript(self.profile, session)
+        self.assertEqual([call["name"] for call in calls], ["read_url_content", "read_url_content"])
+        self.assertEqual(runner.verify_claims([claim(url_b, "Only A contains this excerpt"),
+                                               claim(url_b, "**", claim_id="c2")],
+                                              calls, "web", self.repo, "agy"),
+                         ["unverified", "unverified"])
+        rows[0]["tool_calls"] = rows[0]["tool_calls"][:1]
+        path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
+        self.assertEqual(runner.verify_claims([claim(url_a, "Only A contains this excerpt")],
+                                              runner.agy_transcript(self.profile, session),
+                                              "web", self.repo, "agy"), ["retrieved"])
+        path.write_text(json.dumps(rows[0]) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(runner.RunError, "no tool result"):
+            runner.agy_transcript(self.profile, session)
+
+    def test_agy_effort_choices_reject_xhigh_and_max(self):
+        for effort in ("xhigh", "max"):
+            with self.subTest(effort=effort), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    runner.main(["panel", "--agy-effort", effort])
+                with self.assertRaises(runner.RunError):
+                    runner.agy_command("panel", self.root, runner.AGY_MODEL, effort, None, 60)
+
+    def test_usage_probe_allows_network_timeout(self):
+        calls = []
+        def probe(prefix, flags, cwd, profile, timeout=10):
+            calls.append((flags, timeout))
+            return {"--version": "1.2.9", "mcp": "No MCP servers configured.",
+                    "plugin": "No imported plugins.", "-p": "Gemini remaining quota: 100%"}[flags[0]]
+        with patch.object(runner, "agy_probe", side_effect=probe):
+            self.assertEqual(runner.agy_preflight(["agy"], self.profile, self.root, False), ("1.2.9", True))
+        self.assertIn((["-p", "/usage"], 30), calls)
+
+    def test_review_uses_single_version_probe(self):
+        code, record, _, error = self.call(mode="review", case="version_drift")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual((self.fake / "version.count").read_text(), "1")
+
+    def test_worker_rechecks_cli_version_after_preflight(self):
+        code, record, _, _ = self.panel("version_drift")
+        self.assertEqual(code, 1)
+        self.assertTrue(all(w["status"] == "failed" for w in record["workers"]))
+        self.assertFalse((self.fake / "w1.argv.json").exists())
+
+    def test_agy_citations_need_exact_read_url_content(self):
+        url = "https://example.org/a"
+        calls = [{"name": "search_web", "input": {"query": "a"}, "ok": True,
+                  "text": "https://example.org/search Verified source text", "structured": None},
+                 {"name": "read_url_content", "input": {"Url": url}, "ok": True,
+                  "text": "**Verified** source text", "structured": None}]
+        claims = [claim(url, "Verified source text"),
+                  claim("https://example.org/search", "Verified source text", claim_id="c2"),
+                  claim("https://example.org/never", "Verified source text", claim_id="c3")]
+        self.assertEqual(runner.verify_claims(claims, calls, "web", self.repo, "agy"),
+                         ["retrieved", "unverified", "mismatch"])
+        with self.assertRaises(runner.RunError):
+            runner.agy_session("../../outside")
+
+    def test_mixed_provider_worker_settings_are_isolated(self):
+        self.spec["workers"][1]["provider"] = "claude"
+        self.spec["model"] = "claude-test"
+        self.spec["effort"] = "high"
+        self.spec_path.write_text(json.dumps(self.spec), encoding="utf-8")
+        value = response(claim("https://claude.example/doc", "Claude source text"))
+        (self.fake / "w2.jsonl").write_text(stream(PanelTests.SESSIONS["w2"],
+                                                 [fetch("https://claude.example/doc", "Claude source text")],
+                                                 value), encoding="utf-8")
+        code, record, _, error = self.panel(extra=("--agy-effort", "low"))
+        self.assertEqual(code, 0, (record, error))
+        settings = record["worker_settings"]
+        self.assertEqual(settings["w1"], {"provider": "agy", "model": runner.AGY_MODEL, "effort": "low"})
+        self.assertEqual(settings["w2"], {"provider": "claude", "model": "claude-test", "effort": "high"})
+        argv = json.loads((self.fake / "w1.argv.json").read_text())
+        self.assertNotIn("claude-test", argv)
+        self.assertEqual(argv[argv.index("--effort") + 1], "low")
+
+    def test_plan_only_review_resume_and_build_gate(self):
+        code, record, _, error = self.call(mode="review")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["assurance"], "cross_provider_plan_only")
+        self.assertIn("PLAN_BODY_ONLY", record["response"]["limitations"][-1])
+        prompt = json.loads((self.fake / "review.stdin.json").read_text())["message"]["content"]
+        self.assertIn("Secret plan detail", prompt)
+        self.assertIn("no tools or repository access", prompt)
+        with self.assertRaisesRegex(runner.RunError, "PLAN_BODY_ONLY"):
+            runner.check_approval(record, self.plan, self.repo)
+        result_path = Path(record["artifacts"]) / "result.json"
+        code, failed, _, _ = self.call(mode="review", case="wrong_id", extra=("--resume", str(result_path)))
+        self.assertEqual(code, 1)
+        self.assertFalse(failed["fallback_eligible"])
+        self.assertIn("different conversation", failed["error"])
+
+    def test_web_only_plan_edit_invalidates_digest(self):
+        code, _, output, _ = self.call(extra=("--dry-run",))
+        self.assertEqual(code, 0)
+        digest = json.loads(output)["payload_sha256"]
+        self.plan.write_text("# Revised plan\n", encoding="utf-8")
+        code, _, _, error = self.call(extra=("--payload-sha256", digest))
+        self.assertEqual(code, 1)
+        self.assertIn("does not match", error)
+
+    def test_profile_subcommand_and_role_boundaries(self):
+        output = io.StringIO()
+        with patch.dict(os.environ, {"HOME": str(self.home)}), \
+             patch.object(runner.tempfile, "gettempdir", return_value=str(self.root)), \
+             contextlib.redirect_stdout(output):
+            self.assertEqual(runner.main(["agy-profile"]), 0)
+        self.assertIn("One-time login:", output.getvalue())
+        self.assertIn(str(self.profile), output.getvalue())
+        for args in (["build", "--provider", "agy"], ["inspect", "--provider", "agy"]):
+            with self.subTest(args=args):
+                code, _, _, error = self.call(mode=args[0], extra=args[1:])
+                self.assertEqual(code, 1)
+                self.assertIn("agy", error)
+        self.assertEqual(runner.resolve_roles("codex", "agy")["reviewer"], "agy")
+        with self.assertRaises(runner.RunError):
+            runner.resolve_roles("agy")
 
 
 if __name__ == "__main__":

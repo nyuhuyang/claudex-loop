@@ -135,6 +135,8 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 
 `panel` mode fans research out to fresh, read-only workers from the other provider. From a Codex host: Claude web workers that never see the repository, and Claude repo workers confined to it by `--restricted`. From a Claude host: web-only Codex workers with shell, file-viewing and connector tools disabled. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
 
+Each panel worker can also select a non-host `provider`, including Google's Antigravity CLI (`agy`) for `kind: web`. agy uses an isolated, manually logged-in `HOME` profile, Gemini models only, and a full-transcript tool audit. Its citations require text returned by `read_url_content` for the exact URL. An explicit `review --provider agy` reviews only the supplied plan body, records `cross_provider_plan_only`, and cannot approve a build. Run `runner.py agy-profile` to create its profile and see the manual login command. The live agy canary remains pending; see [validation](VALIDATION.md) before use.
+
 ## What an approval means
 
 The runner validates a successful CLI turn and a structured review; an empty output file or a session-start event cannot count as approval. The approval records the plan's path and SHA256. Changing the plan invalidates it. Inspections also record the pre-build commit and a fingerprint of the inspected changes, including staged and untracked files. Later code changes need another inspection.

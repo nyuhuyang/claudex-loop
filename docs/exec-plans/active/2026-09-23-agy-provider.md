@@ -69,14 +69,14 @@ agy repo reading, building, inspecting, or hosting claudex-loop; the Python SDK;
 ## Progress Checklist
 
 - [ ] Live profile canary (user-authorised): create profile, user logs in, then verify the stdin stream-json prompt transport with `--json-schema`, deny rules block write/command and outside reads (absolute path, `../`, symlink — any success blocks rollout), `read_url` succeeds, stdin prompt delivery, no hooks fire, transcript path/shape — record in VALIDATION.md
-- [ ] Provider table extraction with no Claude/Codex behaviour change
-- [ ] `agy-profile` subcommand and preflight
-- [ ] agy command builder, stream parser, failure classification
-- [ ] Tool audit and transcript-based citation verification
-- [ ] Panel `provider` field, per-worker provider resolution, plan hash in payload digest, agy web workers
-- [ ] `review --provider agy`, plan-only assurance, `check_approval` rejection
-- [ ] Transcript cleanup for panel workers
-- [ ] Tests with a fake `agy` (stream, transcript, denial, AGY_ERROR, hostile tool, non-gemini model, preflight failures, resume id)
+- [x] Provider table extraction with no Claude/Codex behaviour change
+- [x] `agy-profile` subcommand and preflight
+- [x] agy command builder, stream parser, failure classification
+- [x] Tool audit and transcript-based citation verification
+- [x] Panel `provider` field, per-worker provider resolution, plan hash in payload digest, agy web workers
+- [x] `review --provider agy`, plan-only assurance, `check_approval` rejection
+- [x] Transcript cleanup for panel workers
+- [x] Tests with a fake `agy` (stream, transcript, denial, AGY_ERROR, hostile tool, non-gemini model, preflight failures, resume id)
 - [ ] Docs updated; live runs: one agy plan review, one Claude-hosted panel with Codex + agy web workers
 - [ ] Open PR; archive this plan
 

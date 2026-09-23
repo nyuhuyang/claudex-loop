@@ -1,3 +1,9 @@
+---
+status: completed
+created: 2026-09-15
+completed: 2026-09-15
+---
+
 # Plan: port interrogation technique into references/interrogate.md
 
 ## Goal

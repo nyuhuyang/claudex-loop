@@ -29,7 +29,7 @@ If the user supplies `codex_cli` or `claude_cli`, map the selected provider's ex
 | Argument | Default | Meaning |
 |---|---|---|
 | `PLAN_FILE` / `plan` | `docs/exec-plans/active/<date>-<slug>.md` | Plan path used throughout, including the build handoff. Resolve the plan/log pair once per run. When the path is generated from this default and already exists, add a numeric suffix rather than overwriting; an explicitly supplied path is used as given, including an existing one for `mode=review` |
-| `LOG_FILE` / `log` | `docs/exec-plans/active/<date>-<slug>-review-log.md` | Append-only transcript, kept beside its plan. When the work is finished, move both to `docs/exec-plans/completed/` |
+| `LOG_FILE` / `log` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only transcript, kept beside its plan. Archive both to `docs/exec-plans/completed/` under the completion rule below |
 | `rounds` / `MAX_ROUNDS` | `5` | Maximum completed plan-review rounds |
 | `builder` | host | Provider implementing the plan |
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |
@@ -57,12 +57,15 @@ Maintain a short visible decision map. Ask only about unresolved decisions that 
 
 Read [the interrogation reference](references/interrogate.md) for decision tiering, the demotion rule, and docs-aware probing technique. Respect existing glossary definitions; resolve ambiguous domain language. Maintain glossary-only context lazily using [CONTEXT-FORMAT.md](CONTEXT-FORMAT.md). Record an ADR only for expensive-to-reverse, non-obvious trade-offs using [ADR-FORMAT.md](ADR-FORMAT.md).
 
-Write the resolved `PLAN_FILE` with:
+Write the resolved `PLAN_FILE` as an execution plan (the `exec-plan` skill's format; use that skill when the host has it, otherwise follow these rules). Create `docs/exec-plans/active/` if missing. Start with frontmatter `status: in-progress` and `created: <YYYY-MM-DD>`, then include:
 - Goal and observable acceptance criteria.
 - Concrete approach, key decisions, trade-offs and non-goals.
 - Confirmed assumptions with sources and remaining risks.
 - Relevant toolchain requirements per provider, if any.
 - Verification: exact proof command(s), expected results, and manual/visual checks when needed.
+- `## Progress Checklist`: every actionable implementation, verification, documentation and handoff step as a `- [ ]` checkbox, in dependency order.
+
+Checkbox state is the canonical progress record. Change `[ ]` to `[x]` immediately after that step's verification succeeds, never in advance. Keep blocked work unchecked with `— BLOCKED: <reason>`; mark removed scope `[x] ... — N/A: <reason>` only when the scope change or a user decision removes it. A resumed session reads the active plan first and continues from the first dependency-ready unchecked item.
 
 Derive proof commands from the repository when possible. Ask only when what counts as success remains unclear. Start the append-only `LOG_FILE` with roles, model requests, scope, authorization and round limits. Keep run diagnostics outside the checkout.
 
@@ -92,5 +95,7 @@ The host can implement directly with its normal tools. For a different builder, 
 Run the agreed proof checks, inspect all changed files and review the result through the other provider in a **fresh** `inspect` session. Supply the pre-build commit and builder identity. If that provider is unavailable and the failed result is fallback-eligible, automatically launch a fresh same-provider inspection with `--provider BUILDER --fallback-from FAILED_RESULT`. This is weaker assurance, not cross-provider inspection; surface it in the log and final result. Reinspection after accepted fixes also uses a fresh session. Log findings and dispositions; rerun affected proof checks after fixes.
 
 If the coordinator takes over coding, it has become a builder. Require a fresh other-provider inspection of its changes; never describe the earlier inspection as covering later edits. If both providers contributed code, record authorship and have each inspect the other's changes; do not claim any model independently reviewed code it authored. If the inspection budget is exhausted, report remaining findings and unreviewed edits explicitly for the user's decision.
+
+**Completion rule.** When the work is done, re-check each checkbox against its evidence. Move the plan and its log to `docs/exec-plans/completed/` only when every item is `[x]` (including explained `N/A`), then set `status: completed` and add `completed: <YYYY-MM-DD>`. Any unexplained unchecked item keeps the plan active; report the remaining items instead of archiving.
 
 Present the final diff, proof results, inspection coverage, assurance (`cross_provider` or `degraded_same_provider`), fallback cause, unresolved findings, deviations and rounds used. Honor existing commit/push authorization; otherwise leave the concrete diff ready for sign-off. External publication is never implied merely by running the loop.

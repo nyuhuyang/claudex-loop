@@ -95,7 +95,7 @@ does not license hard-coding a model for research agents — the skill forbids t
 
 The runner's `panel` mode (see the runtime reference) enforces part of this: launch count, concurrency and wall clock are hard limits, the launch is bound to the dry-run the user approved, and a question with fewer than two distinct angles is refused before launch and reported as under-covered after it. Token bands stay advisory. The panel has no retry allowance; a retry is a new, separately approved run.
 
-Workers may select `provider: claude|codex|agy`, provided it differs from the host. The default remains the opposite provider. agy supports `kind: web` only; its verified excerpts come from full `read_url_content` transcript results for the exact cited URL. Its `search_web` summaries do not verify a citation. The dry-run digest includes the effective provider, model and effort for each worker and the plan SHA256, even for web-only prompts. Set up `agy-profile` and complete the separate manual login before launching; see [runtime](runtime.md#antigravity-plan-body-review).
+Workers may select `provider: claude|codex|agy`, provided it differs from the host. The default remains the opposite provider. agy supports `kind: web` only; its verified excerpts come from the page `read_url_content` saved for the exact cited URL. Its `search_web` summaries do not verify a citation. The dry-run digest includes the effective provider, model and effort for each worker and the plan SHA256, even for web-only prompts. Set up `agy-profile` and log in to the `agy-web` profile before launching; see [runtime](runtime.md#antigravity-plan-body-review).
 
 ## What extraction can and cannot promise
 

@@ -27,11 +27,8 @@ HOSTS = BUILDERS = INSPECTORS = PROVIDERS
 REVIEWERS = PANEL_WORKERS = PROVIDERS + ("agy",)
 VALIDATED_AGY_CLI = ("1.2.9",)
 AGY_MODEL = "gemini-3.1-pro-high"
-AGY_SETTINGS = {"toolPermission": "strict", "enableTerminalSandbox": True,
-                "allowNonWorkspaceAccess": False, "enableTelemetry": False,
-                "permissions": {"deny": ["read_file(*)", "write_file(*)", "command(*)",
-                                         "unsandboxed(*)", "mcp(*)", "execute_url(*)"],
-                                "allow": ["read_url(*)"]}}
+AGY_ROLES = ("web", "review")
+AGY_BASE_DENY = ["write_file(*)", "command(*)", "unsandboxed(*)", "mcp(*)", "execute_url(*)"]
 UNAVAILABLE_MARKERS = (
     "authentication failed", "login required", "not logged in", "unauthorized",
     "quota", "rate limit", "usage limit", "hit your limit", "service unavailable",
@@ -362,10 +359,31 @@ def mcp_off_args(names: list[str]) -> list[str]:
     return [arg for name in names for arg in ("-c", f"mcp_servers.{name}.enabled=false")]
 
 
-def agy_profile() -> Path:
+def agy_profile(role: str) -> Path:
     if os.name == "nt":
         raise RunError("agy is refused on Windows until its permission system is validated there.")
-    return Path.home() / ".claudex-loop" / "agy-home"
+    if role not in AGY_ROLES:
+        raise RunError(f"Unknown agy profile role: {role}")
+    return Path.home() / ".claudex-loop" / f"agy-{role}"
+
+
+def agy_brain(profile: Path) -> Path:
+    return profile / ".gemini" / "antigravity-cli" / "brain"
+
+
+def agy_settings(role: str, profile: Path) -> dict:
+    """Separate profiles keep private plan text away from the one role that can reach the web.
+
+    read_url_content saves each page under the profile's brain directory, so web workers may read
+    that directory only; plan reviewers get neither files nor web. "strict" would override the
+    allow list (live canary 2026-09-23), so the preset stays "request-review" and denies do the work.
+    """
+    if role == "web":
+        deny, allow = list(AGY_BASE_DENY), ["read_url(*)", f"read_file({agy_brain(profile)})"]
+    else:
+        deny, allow = ["read_file(*)", "read_url(*)", *AGY_BASE_DENY], []
+    return {"toolPermission": "request-review", "enableTerminalSandbox": True,
+            "allowNonWorkspaceAccess": False, "permissions": {"deny": deny, "allow": allow}}
 
 
 def agy_cwd(parent: Path) -> Path:
@@ -382,18 +400,19 @@ def agy_cwd(parent: Path) -> Path:
 
 
 def create_agy_profile() -> None:
-    profile = agy_profile()
-    profile.mkdir(parents=True, exist_ok=True, mode=0o700)
-    profile.chmod(0o700)
-    settings = profile / ".gemini" / "antigravity-cli" / "settings.json"
-    settings.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    save(settings, AGY_SETTINGS)
-    login = agy_cwd(Path(tempfile.gettempdir()))
-    agy_profile_check(profile)
-    # Recheck immediately before printing the path used by the login command.
-    agy_cwd_check(login)
-    print(f"Profile: {profile}\nOne-time login: cd {shlex.quote(str(login))} && "
-          f"HOME={shlex.quote(str(profile))} agy")
+    for role in AGY_ROLES:
+        profile = agy_profile(role)
+        profile.mkdir(parents=True, exist_ok=True, mode=0o700)
+        profile.chmod(0o700)
+        settings = profile / ".gemini" / "antigravity-cli" / "settings.json"
+        settings.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        save(settings, agy_settings(role, profile))
+        login = agy_cwd(Path(tempfile.gettempdir()))
+        agy_profile_check(profile, role)
+        # Recheck immediately before printing the path used by the login command.
+        agy_cwd_check(login)
+        print(f"{role} profile: {profile}\nOne-time login: cd {shlex.quote(str(login))} && "
+              f"HOME={shlex.quote(str(profile))} agy")
 
 
 def agy_cwd_check(cwd: Path) -> None:
@@ -406,7 +425,7 @@ def agy_cwd_check(cwd: Path) -> None:
             raise RunError(f"agy workspace customization found at {ancestor}; refusing launch.")
 
 
-def agy_profile_check(profile: Path) -> None:
+def agy_profile_check(profile: Path, role: str) -> None:
     if os.name == "nt":
         raise RunError("agy is refused on Windows until its permission system is validated there.")
     if (not profile.is_dir() or profile.is_symlink() or profile.stat().st_mode & 0o077
@@ -418,10 +437,32 @@ def agy_profile_check(profile: Path) -> None:
         raise RunError("agy profile configuration root must not be a symlink.")
     settings = cli_root / "settings.json"
     try:
-        if settings.is_symlink() or json.loads(settings.read_text(encoding="utf-8")) != AGY_SETTINGS:
-            raise RunError("agy settings.json differs from the locked profile settings.")
+        if settings.is_symlink():
+            raise RunError("agy settings.json is a symlink; rerun agy-profile.")
+        value = json.loads(settings.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
-        raise RunError("agy settings.json is missing or invalid.") from exc
+        raise RunError("agy settings.json is missing or invalid; rerun agy-profile.") from exc
+    permissions = value.get("permissions") if isinstance(value, dict) else None
+    expected = agy_settings(role, profile)["permissions"]
+    if (not isinstance(value, dict)
+            or set(value) - {"toolPermission", "enableTerminalSandbox", "allowNonWorkspaceAccess",
+                             "permissions", "trustedWorkspaces"}
+            # agy rewrites the file without default-valued keys; request-review is the default.
+            or value.get("toolPermission", "request-review") != "request-review"
+            or value.get("enableTerminalSandbox") is not True
+            or value.get("allowNonWorkspaceAccess", False) is not False
+            or ("trustedWorkspaces" in value and
+                (not isinstance(value["trustedWorkspaces"], list) or
+                 any(not isinstance(item, str) for item in value["trustedWorkspaces"])))
+            or not isinstance(permissions, dict)
+            or set(permissions) - {"deny", "allow", "ask"}
+            or not isinstance(permissions.get("deny"), list)
+            or any(not isinstance(item, str) for item in permissions["deny"])
+            or not set(expected["deny"]) <= set(permissions["deny"])
+            or not isinstance(permissions.get("allow", []), list)
+            or sorted(permissions.get("allow", [])) != sorted(expected["allow"])
+            or ("ask" in permissions and not isinstance(permissions["ask"], list))):
+        raise RunError("agy settings.json weakens the locked profile; rerun agy-profile.")
     for name in (".agents", ".agent", "_agents", "_agent", "GEMINI.md", "AGENTS.md"):
         path = profile / name
         if path.exists() or path.is_symlink():
@@ -465,8 +506,8 @@ def agy_probe(prefix: list[str], flags: list[str], cwd: Path, profile: Path, tim
     return output
 
 
-def agy_version(prefix: list[str], profile: Path, cwd: Path, allow: bool) -> tuple[str, bool]:
-    agy_profile_check(profile)
+def agy_version(prefix: list[str], profile: Path, cwd: Path, allow: bool, role: str) -> tuple[str, bool]:
+    agy_profile_check(profile, role)
     version = agy_probe(prefix, ["--version"], cwd, profile)
     validated = version in VALIDATED_AGY_CLI
     if not validated and not allow:
@@ -474,8 +515,8 @@ def agy_version(prefix: list[str], profile: Path, cwd: Path, allow: bool) -> tup
     return version, validated
 
 
-def agy_preflight(prefix: list[str], profile: Path, cwd: Path, allow: bool) -> tuple[str, bool]:
-    version, validated = agy_version(prefix, profile, cwd, allow)
+def agy_preflight(prefix: list[str], profile: Path, cwd: Path, allow: bool, role: str) -> tuple[str, bool]:
+    version, validated = agy_version(prefix, profile, cwd, allow, role)
     if agy_probe(prefix, ["mcp", "list"], cwd, profile) != "No MCP servers configured.":
         raise RunError("agy MCP listing is not empty.")
     if agy_probe(prefix, ["plugin", "list"], cwd, profile) != "No imported plugins.":
@@ -967,8 +1008,8 @@ def parse_codex_panel_stream(stdout: str) -> dict:
             "permission_denials": [], "total_cost_usd": None}
 
 
-def agy_stream_calls(stdout: str) -> list:
-    calls, seen = [], set()
+def agy_stream_tools(stdout: str) -> list:
+    calls, positions = [], {}
     for event in _stream_events(stdout, strict=False):
         step = event.get("step_update")
         if event.get("event") == "step_update" and isinstance(step, dict) and step.get("step_type") == "tool":
@@ -977,15 +1018,31 @@ def agy_stream_calls(stdout: str) -> list:
             if not isinstance(name, str) or not name:
                 raise RunError("agy stream has an unnamed tool call.")
             key = (step.get("step_index"), name)
-            if key not in seen:
-                calls.append(name)
-                seen.add(key)
+            state = step.get("state")
+            if state not in ("ACTIVE", "DONE", "ERROR"):
+                raise RunError("agy stream has an unknown tool state.")
+            if key not in positions:
+                positions[key] = len(calls)
+                calls.append({"name": name, "state": state})
+            elif state in ("DONE", "ERROR"):
+                prior = calls[positions[key]]["state"]
+                if prior in ("DONE", "ERROR") and prior != state:
+                    raise RunError("agy stream has conflicting tool outcomes.")
+                calls[positions[key]]["state"] = state
+    if any(call["state"] not in ("DONE", "ERROR") for call in calls):
+        raise RunError("agy stream has an incomplete tool call.")
     return calls
 
 
+def agy_stream_calls(stdout: str) -> list:
+    return [call["name"] for call in agy_stream_tools(stdout)]
+
+
 def parse_agy_stream(stdout: str, stderr: str, expected_session=None, requested_model=None) -> dict:
+    # Explicit deny rules surface as ERROR tool steps; "auto-denied" means an unlisted action
+    # needed approval headless mode cannot give, which ends the turn early.
     if re.search(r"auto-denied|AGY_ERROR:", stderr, re.I):
-        raise RunError("agy denied a tool or reported an API error; inspect stderr.txt.")
+        raise RunError("agy auto-denied a tool or reported an API error; inspect stderr.txt.")
     events = _stream_events(stdout, strict=True)
     inits = [e for e in events if e.get("event") == "init"]
     finals = [e.get("result") for e in events if e.get("event") == "result"]
@@ -1029,22 +1086,65 @@ def agy_transcript(profile: Path, session: str) -> list:
         following = rows[index + 1] if index + 1 < len(rows) else {}
         if entries and (following.get("type") != "GENERIC" or not isinstance(following.get("content"), str)):
             raise RunError("agy transcript has no tool result following a call.")
+        if entries and following.get("status") not in ("DONE", "ERROR"):
+            raise RunError("agy transcript has an unknown tool result status.")
         for entry in entries:
             if not isinstance(entry, dict) or not isinstance(entry.get("name"), str) \
                     or not isinstance(entry.get("args"), dict):
                 raise RunError("agy transcript has a malformed tool call.")
-            calls.append({"name": entry["name"], "input": entry["args"], "ok": True,
-                          "text": following["content"] if len(entries) == 1 else "", "structured": None,
-                          "evidence_ambiguous": len(entries) > 1})
+            text = following["content"] if len(entries) == 1 else ""
+            if entry["name"] == "read_url_content" and text and following["status"] == "DONE":
+                text = agy_fetched_page(profile, session, text)
+            calls.append({"name": entry["name"], "input": entry["args"],
+                          "ok": following["status"] == "DONE", "result_status": following["status"],
+                          "text": text, "structured": None, "evidence_ambiguous": len(entries) > 1})
     return calls
+
+
+def agy_steps_dir(profile: Path, session: str) -> Path:
+    return (agy_brain(profile) / agy_session(session) / ".system_generated" / "steps").resolve()
+
+
+def agy_fetched_page(profile: Path, session: str, text: str) -> str:
+    """read_url_content saves the page and returns only its path; use that file as the tool result."""
+    match = re.search(r"has been saved to: (\S+)", text)
+    if not match:
+        return text
+    path = Path(match.group(1)).resolve()
+    if not path.is_relative_to(agy_steps_dir(profile, session)):
+        raise RunError("agy saved a fetched page outside this conversation; run is unauditable.")
+    try:
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
 
 
 def audit_agy(stdout: str, profile: Path, session: str, kind: str) -> list:
     calls = agy_transcript(profile, session)
-    if Counter(agy_stream_calls(stdout)) != Counter(call["name"] for call in calls):
+    stream = agy_stream_tools(stdout)
+    audited = [call for call in calls if call["name"] != "finish"]
+    if Counter(call["name"] for call in stream) != Counter(call["name"] for call in audited):
         raise RunError("agy stream and transcript tool sets disagree; run is unauditable.")
+    if Counter((call["name"], call["state"]) for call in stream) != Counter(
+            (call["name"], call["result_status"]) for call in audited):
+        raise RunError("agy stream and transcript tool outcomes disagree; run is unauditable.")
     allowed = {"search_web", "read_url_content"} if kind == "web" else set()
-    bad = [call["name"] for call in calls if call["name"] not in allowed]
+    steps = agy_steps_dir(profile, session)
+    bad = []
+    for call in calls:
+        if call["name"] == "finish":
+            if not call["ok"]:
+                raise RunError("agy finish tool failed; run is unauditable.")
+            continue
+        target = call["input"].get("AbsolutePath")
+        if (kind == "web" and call["name"] == "view_file" and isinstance(target, str)
+                and Path(target).resolve().is_relative_to(steps)):
+            continue  # reading a page this conversation fetched
+        if call["name"] not in allowed:
+            if call["result_status"] == "ERROR":
+                call["denied"] = True
+            else:
+                bad.append(call["name"])
     if bad:
         raise RunError(f"agy used a forbidden tool: {', '.join(bad)}")
     return calls
@@ -1061,6 +1161,9 @@ def cleanup_agy_panel(profile: Path, session: str, child: Path) -> None:
     conversations = (base / "conversations").resolve()
     if not brain.is_relative_to(base) or not conversations.is_relative_to(base):
         raise RunError("agy cleanup path escapes the profile.")
+    steps = brain / ".system_generated" / "steps"
+    if steps.is_dir() and not steps.is_symlink():
+        shutil.copytree(steps, child / "steps", symlinks=True)
     if brain.exists():
         shutil.rmtree(brain)
     for suffix in (".db", ".db-shm", ".db-wal"):
@@ -1284,13 +1387,14 @@ def _agy_review_prompt() -> str:
     )
 
 
-def _agy_review_audit(run_dir: Path, profile: Path | None) -> None:
+def _agy_review_audit(run_dir: Path, profile: Path | None) -> list[str]:
     stdout_path = run_dir / "stdout.txt"
     stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
     ids = [e.get("conversation_id") for e in _stream_events(stdout, strict=False) if e.get("event") == "init"]
     if len(ids) != 1:
         raise RunError("agy stream has no unambiguous conversation ID for tool audit.")
-    audit_agy(stdout, profile, agy_session(ids[0]), "review")
+    calls = audit_agy(stdout, profile, agy_session(ids[0]), "review")
+    return [call["name"] for call in calls if call.get("denied")]
 
 
 def _agy_review_parse(run_dir: Path, expected_session, model: str) -> dict:
@@ -1387,7 +1491,7 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
             save(child / "schema.json", PANEL_SCHEMA)
         if provider == "agy":
             version, validated = agy_version(adapter["prefix"], adapter["profile"], cwd,
-                                             adapter["allow_unvalidated"])
+                                             adapter["allow_unvalidated"], "web")
             record.update(cli_version=version, cli_validated=validated)
         argv = adapter["prefix"] + PROVIDER_ADAPTERS[provider]["command"](
             child, adapter, worker, min(ctx["timeout"], remaining))
@@ -1418,6 +1522,8 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
             if violations:
                 record.update(status="confinement_violation", confinement_violations=violations)
             record["read_confinement_attempts"] = attempts
+            if provider == "agy":
+                record["denied_attempts"] = [call["name"] for call in calls if call.get("denied")]
         record["exit_code"] = code
         if violations:
             raise RunError("Worker read outside the repository or used a disallowed tool.")
@@ -1510,10 +1616,11 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
     for name in dict.fromkeys(resolved.values()):
         prefix = cli_prefix(name, args.agy_cli if name == "agy" else args.cli)
         if name == "agy":
-            profile = agy_profile()
+            profile = agy_profile("web")
             probe_cwd = agy_cwd(Path(tempfile.gettempdir()))
             try:
-                cli_version, validated = agy_preflight(prefix, profile, probe_cwd, args.allow_unvalidated_cli)
+                cli_version, validated = agy_preflight(prefix, profile, probe_cwd, args.allow_unvalidated_cli,
+                                                       "web")
             finally:
                 shutil.rmtree(probe_cwd)
             disable, harness = [], "antigravity-cli"
@@ -1543,7 +1650,7 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
                            "disable": disable, "harness": harness,
                            "model": args.agy_model if name == "agy" else model,
                            "effort": args.agy_effort if name == "agy" else effort,
-                           "profile": agy_profile() if name == "agy" else None,
+                           "profile": agy_profile("web") if name == "agy" else None,
                            "allow_unvalidated": bool(args.allow_unvalidated_cli)}
     default_adapter = providers.get(provider, next(iter(providers.values())))
     prefix, cli_version, validated = (default_adapter[k] for k in ("prefix", "version", "validated"))
@@ -1758,10 +1865,10 @@ def run(args) -> int:
         prefix = cli_prefix(provider, args.agy_cli if provider == "agy" else args.cli)
         agy_working_dir = None
         if provider == "agy":
-            profile = agy_profile()
+            profile = agy_profile("review")
             agy_working_dir = agy_cwd(run_dir)
             version_text, validated = agy_preflight(prefix, profile, agy_working_dir,
-                                                    args.allow_unvalidated_cli)
+                                                    args.allow_unvalidated_cli, "review")
             record.update(cli_version=version_text, cli_validated=validated,
                           allow_unvalidated_cli=bool(args.allow_unvalidated_cli))
         else:
@@ -1791,8 +1898,10 @@ def run(args) -> int:
                            env=agy_env(profile) if provider == "agy" else None)
         finally:
             if args.mode != "build":
-                PROVIDER_ADAPTERS[provider]["review_audit"](
+                denied = PROVIDER_ADAPTERS[provider]["review_audit"](
                     run_dir, profile if provider == "agy" else None)
+                if provider == "agy":
+                    record["denied_attempts"] = denied
         record["exit_code"] = code
         if code:
             raise RunError(f"{provider} exited {code}; inspect stdout.txt and stderr.txt.")

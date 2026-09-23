@@ -179,15 +179,31 @@ logs.mkdir(parents=True, exist_ok=True)
 transcript = [{'step_index':0,'source':'USER_EXPLICIT','type':'USER_INPUT','content':prompt}]
 if entries:
     transcript += [{'step_index':1,'source':'MODEL','type':'PLANNER_RESPONSE','tool_calls':entries},
-                   {'step_index':2,'source':'MODEL','type':'GENERIC','content':'Verified source text'}]
+                   {'step_index':2,'source':'MODEL','type':'GENERIC','status':'DONE',
+                    'content':'Verified source text'}]
 if case != 'missing_transcript':
-    (logs / 'transcript_full.jsonl').write_text(''.join(json.dumps(x)+'\n' for x in transcript), encoding='utf-8')
+    scripted_transcript = data / (worker + '.transcript.jsonl')
+    (logs / 'transcript_full.jsonl').write_text(
+        scripted_transcript.read_text(encoding='utf-8') if scripted_transcript.exists() else
+        ''.join(json.dumps(x)+'\n' for x in transcript), encoding='utf-8')
+page = data / (worker + '.page.md')
+if page.exists():  # read_url_content saves the fetched page here and returns only its path
+    steps = root / 'brain' / session / '.system_generated' / 'steps' / '2'
+    steps.mkdir(parents=True, exist_ok=True)
+    (steps / 'content.md').write_text(page.read_text(encoding='utf-8'), encoding='utf-8')
 conversations = root / 'conversations'
 conversations.mkdir(exist_ok=True)
 (conversations / (session + '.db')).write_text('test', encoding='utf-8')
 with sqlite3.connect(root / 'conversation_summaries.db') as db:
     db.execute('CREATE TABLE IF NOT EXISTS conversation_summaries (conversation_id TEXT PRIMARY KEY)')
     db.execute('INSERT OR REPLACE INTO conversation_summaries VALUES (?)', (session,))
+scripted_stream = data / (worker + '.stream.jsonl')
+if scripted_stream.exists():
+    sys.stdout.write(scripted_stream.read_text(encoding='utf-8'))
+    scripted_stderr = data / (worker + '.stderr.txt')
+    if scripted_stderr.exists():
+        sys.stderr.write(scripted_stderr.read_text(encoding='utf-8'))
+    sys.exit(0)
 print(json.dumps({'event':'init','conversation_id':session,'init':
                   {'model':model,'cwd':os.getcwd(),'tools':[],'permission_mode':'request-review'}}))
 if entries:
@@ -1156,7 +1172,8 @@ class AgyTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.home = self.root / "home"
         self.home.mkdir()
-        self.profile = self.home / ".claudex-loop" / "agy-home"
+        self.profile = self.home / ".claudex-loop" / "agy-web"
+        self.review_profile = self.home / ".claudex-loop" / "agy-review"
         self.repo = self.root / "repo"
         self.repo.mkdir()
         self.plan = self.root / "plan.md"
@@ -1206,6 +1223,41 @@ class AgyTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         payload = json.loads(output)["payload_sha256"]
         return self.call(case=case, extra=("--payload-sha256", payload, *extra))
+
+    def script_live_shape(self, worker, tools, value):
+        """Trimmed agy 1.2.9 stream/transcript shape from the 2026-09-23 live canary."""
+        session = (PanelTests.SESSIONS[worker] if worker != "review" else
+                   "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        stream_rows = [{"event": "init", "conversation_id": session,
+                        "init": {"model": runner.AGY_MODEL, "permission_mode": "request-review"}}]
+        transcript_rows = [{"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT"}]
+        for index, (name, args, status, content) in enumerate(tools, 1):
+            step = 2 * index
+            for state in ("ACTIVE", status):
+                stream_rows.append({"event": "step_update", "step_update": {
+                    "conversation_id": session, "step_index": step, "step_type": "tool",
+                    "state": state, "tool_name": name,
+                    "tool_info": {"name": name, "parameters": args}}})
+            transcript_rows += [
+                {"step_index": step - 1, "source": "MODEL", "type": "PLANNER_RESPONSE",
+                 "tool_calls": [{"name": name, "args": args}]},
+                {"step_index": step, "source": "MODEL", "type": "GENERIC",
+                 "status": status, "content": content},
+            ]
+        finish_step = 2 * len(tools) + 1
+        transcript_rows += [
+            {"step_index": finish_step, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "tool_calls": [{"name": "finish", "args": {"answer": json.dumps(value)}}]},
+            {"step_index": finish_step + 1, "source": "MODEL", "type": "GENERIC",
+             "status": "DONE", "content": "Task is complete."},
+        ]
+        stream_rows.append({"event": "result", "result": {"conversation_id": session,
+                            "status": "SUCCESS", "response": json.dumps(value),
+                            "structured_output": value, "usage": {"input_tokens": 3}}})
+        (self.fake / f"{worker}.stream.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in stream_rows), encoding="utf-8")
+        (self.fake / f"{worker}.transcript.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in transcript_rows), encoding="utf-8")
 
     def test_profile_and_panel_transport_citations_cleanup(self):
         code, record, _, error = self.panel()
@@ -1305,7 +1357,7 @@ class AgyTests(unittest.TestCase):
         config.mkdir()
         mcp = config / "mcp_config.json"
         mcp.write_text("", encoding="utf-8")
-        runner.agy_profile_check(self.profile)
+        runner.agy_profile_check(self.profile, "web")
         mcp.write_text(" \n\t", encoding="utf-8")
         code, record, _, error = self.panel()
         self.assertEqual(code, 0, (record, error))
@@ -1334,7 +1386,7 @@ class AgyTests(unittest.TestCase):
                  "tool_calls": [{"name": "read_url_content", "args": {"Url": url_a}},
                                 {"name": "read_url_content", "args": {"Url": url_b}}]},
                 {"step_index": 2, "source": "MODEL", "type": "GENERIC",
-                 "content": "Only A contains this excerpt."}]
+                 "status": "DONE", "content": "Only A contains this excerpt."}]
         path.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
         calls = runner.agy_transcript(self.profile, session)
         self.assertEqual([call["name"] for call in calls], ["read_url_content", "read_url_content"])
@@ -1366,7 +1418,7 @@ class AgyTests(unittest.TestCase):
             return {"--version": "1.2.9", "mcp": "No MCP servers configured.",
                     "plugin": "No imported plugins.", "-p": "Gemini remaining quota: 100%"}[flags[0]]
         with patch.object(runner, "agy_probe", side_effect=probe):
-            self.assertEqual(runner.agy_preflight(["agy"], self.profile, self.root, False), ("1.2.9", True))
+            self.assertEqual(runner.agy_preflight(["agy"], self.profile, self.root, False, "web"), ("1.2.9", True))
         self.assertIn((["-p", "/usage"], 30), calls)
 
     def test_review_uses_single_version_probe(self):
@@ -1453,6 +1505,159 @@ class AgyTests(unittest.TestCase):
         self.assertEqual(runner.resolve_roles("codex", "agy")["reviewer"], "agy")
         with self.assertRaises(runner.RunError):
             runner.resolve_roles("agy")
+
+    def test_post_login_settings_security_contract(self):
+        settings = self.profile / ".gemini/antigravity-cli/settings.json"
+        # Shape of settings-after-login.json: agy dropped default-valued keys and added trustedWorkspaces.
+        brain = self.profile / ".gemini/antigravity-cli/brain"
+        logged_in = {"enableTerminalSandbox": True,
+                     "permissions": {"allow": ["read_url(*)", f"read_file({brain})"],
+                                     "deny": ["write_file(*)", "command(*)",
+                                              "unsandboxed(*)", "mcp(*)", "execute_url(*)"]},
+                     "toolPermission": "request-review",
+                     "trustedWorkspaces": [str(self.root / "login")]}
+        settings.write_text(json.dumps(logged_in), encoding="utf-8")
+        runner.agy_profile_check(self.profile, "web")
+        permitted = copy.deepcopy(logged_in)
+        permitted["permissions"]["ask"] = ["write_url(*)"]
+        settings.write_text(json.dumps(permitted), encoding="utf-8")
+        runner.agy_profile_check(self.profile, "web")
+        with self.assertRaisesRegex(runner.RunError, "rerun agy-profile"):
+            runner.agy_profile_check(self.profile, "review")
+        review = self.review_profile / ".gemini/antigravity-cli/settings.json"
+        review_settings = {"enableTerminalSandbox": True, "toolPermission": "request-review",
+                           "permissions": {"deny": ["read_file(*)", "read_url(*)", "write_file(*)",
+                                                    "command(*)", "unsandboxed(*)", "mcp(*)",
+                                                    "execute_url(*)"]}}
+        review.write_text(json.dumps(review_settings), encoding="utf-8")
+        runner.agy_profile_check(self.review_profile, "review")  # agy may drop the empty allow list
+        del review_settings["toolPermission"]  # live: agy also drops the default request-review preset
+        review.write_text(json.dumps(review_settings), encoding="utf-8")
+        runner.agy_profile_check(self.review_profile, "review")
+        review_settings["toolPermission"] = "request-review"
+        for name, change in {"web allowed": lambda x: x["permissions"].update(allow=["read_url(*)"]),
+                             "web not denied": lambda x: x["permissions"]["deny"].remove("read_url(*)"),
+                             "files not denied": lambda x: x["permissions"]["deny"].remove("read_file(*)")}.items():
+            with self.subTest(review=name):
+                altered = copy.deepcopy(review_settings)
+                change(altered)
+                review.write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaisesRegex(runner.RunError, "rerun agy-profile"):
+                    runner.agy_profile_check(self.review_profile, "review")
+        variants = {
+            "always-proceed": lambda x: x.update(toolPermission="always-proceed"),
+            "strict": lambda x: x.update(toolPermission="strict"),
+            "extra allow": lambda x: x["permissions"]["allow"].append("command(*)"),
+            "missing deny": lambda x: x["permissions"]["deny"].remove("command(*)"),
+            "outside access": lambda x: x.update(allowNonWorkspaceAccess=True),
+            "unknown key": lambda x: x.update(enableTelemetry=False),
+        }
+        for name, change in variants.items():
+            with self.subTest(name=name):
+                altered = copy.deepcopy(logged_in)
+                change(altered)
+                settings.write_text(json.dumps(altered), encoding="utf-8")
+                with self.assertRaisesRegex(runner.RunError, "rerun agy-profile"):
+                    runner.agy_profile_check(self.profile, "web")
+
+    SENTENCE = "This module offers classes representing filesystem paths"
+
+    def saved_page(self, worker, sentence=SENTENCE):
+        """Live shape: read_url_content returns only the path of the page it saved in the brain dir."""
+        page = (self.profile / ".gemini/antigravity-cli/brain" / PanelTests.SESSIONS[worker] /
+                ".system_generated/steps/2/content.md")
+        (self.fake / f"{worker}.page.md").write_text(f"# pathlib\n\n{sentence}.\n", encoding="utf-8")
+        return page, ("Title: Cached Content\n\nOG Description: Fetched from cache\n\n"
+                      "The full content of the article at https://docs.python.org/3/library/pathlib.html "
+                      f"has been saved to: {page}\n\nYou can use the view_file tool to read specific sections.")
+
+    def test_live_shape_web_denials_and_cached_content_citation(self):
+        url = "https://docs.python.org/3/library/pathlib.html"
+        for worker in ("w1", "w2"):
+            page, saved = self.saved_page(worker)
+            tools = [
+                ("search_web", {"query": "Python pathlib", "toolAction": "search"}, "DONE",
+                 f'The search for "Python pathlib" returned the following summary: {url}'),
+                ("read_url_content", {"Url": url, "toolAction": "Reading pathlib docs page"}, "DONE", saved),
+                ("view_file", {"AbsolutePath": str(page)}, "DONE", f"1: {self.SENTENCE}."),
+                ("view_file", {"AbsolutePath": "/outside/secret"}, "ERROR",
+                 "Encountered error in step execution: permission denied"),
+                ("run_command", {"CommandLine": "cat ../secret"}, "ERROR",
+                 "Encountered error in step execution: permission denied"),
+                ("run_command", {"CommandLine": "cat linked-secret"}, "ERROR",
+                 "Encountered error in step execution: permission denied"),
+            ]
+            self.script_live_shape(worker, tools, response(claim(url, self.SENTENCE)))
+        code, record, _, error = self.panel()
+        self.assertEqual(code, 0, (record, error))
+        for worker in record["workers"]:
+            self.assertEqual(worker["denied_attempts"], ["view_file", "run_command", "run_command"])
+            self.assertTrue((Path(worker["artifacts"]) / "steps/2/content.md").is_file())
+        panel = json.loads(Path(record["panel"]).read_text(encoding="utf-8"))
+        self.assertEqual([item["status"] for item in panel["claims"]], ["retrieved", "retrieved"])
+
+    def test_saved_page_is_the_only_file_a_web_worker_may_read(self):
+        url = "https://docs.python.org/3/library/pathlib.html"
+        page, saved = self.saved_page("w1")
+        builtin = self.profile / ".gemini/antigravity-cli/builtin/skills/x/SKILL.md"
+        other = self.profile / ".gemini/antigravity-cli/brain" / PanelTests.SESSIONS["w2"] / "logs/t.jsonl"
+        for name, tools in {
+            "bundled skill read": [("read_url_content", {"Url": url}, "DONE", saved),
+                                   ("view_file", {"AbsolutePath": str(builtin)}, "DONE", "1: skill")],
+            "other conversation": [("view_file", {"AbsolutePath": str(other)}, "DONE", "1: plan")],
+            "page outside conversation": [("read_url_content", {"Url": url}, "DONE",
+                                           saved.replace(str(page), str(other)))],
+        }.items():
+            with self.subTest(name=name):
+                for worker in ("w1", "w2"):
+                    self.script_live_shape(worker, tools, response(claim(url, self.SENTENCE)))
+                code, record, _, error = self.panel()
+                self.assertEqual(code, 1, (record, error))
+                self.assertEqual(record["status"], "failed")
+                self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+
+    def test_review_uses_the_offline_review_profile(self):
+        code, record, _, error = self.call("review")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(Path((self.fake / "review.home.txt").read_text()), self.review_profile)
+        settings = json.loads((self.review_profile / ".gemini/antigravity-cli/settings.json").read_text())
+        self.assertIn("read_url(*)", settings["permissions"]["deny"])
+        self.assertIn("read_file(*)", settings["permissions"]["deny"])
+        self.assertEqual(settings["permissions"]["allow"], [])
+
+    def test_live_shape_review_finish_and_denied_attempts(self):
+        value = {"verdict": "APPROVED", "summary": "Plan body checked.", "findings": [],
+                 "coverage": ["supplied plan body"], "limitations": []}
+        self.script_live_shape("review", [], value)
+        code, record, _, error = self.call(mode="review")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["denied_attempts"], [])
+        self.script_live_shape("review", [
+            ("view_file", {"AbsolutePath": "/outside/secret"}, "ERROR",
+             "Encountered error in step execution: permission denied")], value)
+        code, record, _, error = self.call(mode="review")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["denied_attempts"], ["view_file"])
+
+    def test_live_shape_forbidden_done_fails_and_read_error_is_not_evidence(self):
+        url = "https://docs.python.org/3/library/pathlib.html"
+        value = response(claim(url, "Title: Cached Content"))
+        self.script_live_shape("w1", [
+            ("view_file", {"AbsolutePath": "/outside/secret"}, "DONE", "secret")], value)
+        code, record, _, _ = self.panel()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+        self.script_live_shape("w1", [
+            ("read_url_content", {"Url": url}, "ERROR", "Title: Cached Content")], value)
+        self.script_live_shape("w2", [
+            ("read_url_content", {"Url": url}, "ERROR", "Title: Cached Content")], value)
+        code, record, _, _ = self.panel()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "partial")
+        panel = json.loads(Path(record["panel"]).read_text(encoding="utf-8"))
+        self.assertFalse(panel["claims"])
+        self.assertFalse(any(record["coverage"]["q1"].values()))
 
 
 if __name__ == "__main__":

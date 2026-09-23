@@ -72,7 +72,7 @@ With `mode=review`, load the supplied plan, fill only material gaps with the use
 
 Use the shared runner in `review` mode with the actual `--host`, resolved `--plan` and optional model/effort. First round creates a session. Further rounds use `--resume <previous-successful-result.json>` with the same provider/model/effort and a host-authored `--feedback` file containing dispositions. Never use a guessed session id, `--last`, or a build session as a reviewer.
 
-An explicit `review --provider agy` is a plan-body-only review. Set up its isolated profile with `agy-profile` and a separate manual login first; use `--agy-model`, `--agy-effort`, and `--agy-cli` for this provider. Its `cross_provider_plan_only` result cannot authorize a build. Never route agy to hosting, building, inspection, or repository research. The agy profile retains review plan text for session resume until the user cleans it.
+An explicit `review --provider agy` is a plan-body-only review. Set up its isolated profiles with `agy-profile` and log in to each once; use `--agy-model`, `--agy-effort`, and `--agy-cli` for this provider. Its `cross_provider_plan_only` result cannot authorize a build. Never route agy to hosting, building, inspection, or repository research. The offline `agy-review` profile retains review plan text for session resume until the user cleans it.
 
 Each successful response contains a verdict, evidence-backed findings, actual coverage and limitations. Preserve the entire response and runner result path in `LOG_FILE`.
 

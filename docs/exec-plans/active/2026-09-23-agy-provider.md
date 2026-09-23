@@ -34,6 +34,9 @@ Add Google's Antigravity CLI (`agy`, Gemini models) to the runner as a third pro
 11. **Adapter extraction** (prior decision: extract when the third provider lands). Move per-provider prompt construction, `command`/parse/audit/verify into a small provider table keyed by name, keeping Claude and Codex behaviour byte-identical (existing tests unchanged).
 12. **Docs.** `SKILL.md`, `references/runtime.md`, `references/research.md`, `README.md`, `VALIDATION.md` (canary record). No new skill directory.
 
+### Amendment after the live canary (2026-09-23, Q5 with the user)
+Live facts changed step 1: `strict` overrides `permissions.allow`, so both profiles use `request-review` with explicit denies (denies held live); login rewrites `settings.json`, so preflight checks security properties, not equality; with `--json-schema` agy returns output through a transcript-only `finish` call; denied calls surface as `ERROR` and are recorded as `denied_attempts`; `read_url_content` returns only the path of a page it saved under the profile's `brain/`. Q5 split the profile in two: `~/.claudex-loop/agy-web` (allow `read_url(*)` and `read_file(<profile>/.gemini/antigravity-cli/brain)`, deny writes/commands/MCP/`execute_url`; `view_file` is audited to the conversation's own `steps/`, and citations are checked against that saved page) and `~/.claudex-loop/agy-review` (deny all file reads and `read_url(*)` too), so the role that can reach the web never shares a profile with stored plan text.
+
 ## Key decisions & tradeoffs
 
 - **Q1 roles:** web worker + plan-body reviewer only. Rejected: repo reviewer/builder (repo hooks = code execution; allowlists ineffective).
@@ -41,6 +44,7 @@ Add Google's Antigravity CLI (`agy`, Gemini models) to the runner as a third pro
 - **Q3 citations:** undocumented `transcript_full.jsonl`, version-gated; an unparseable transcript fails the run as unauditable (R2), and weak evidence in an audited transcript is `unverified`. Rejected: trusting model-authored citations; no verification (agy could never satisfy coverage).
 - **Q4 stdlib CLI, not the Python SDK:** AGENTS.md requires a standard-library-only runtime. Revisit the SDK's `enabled_tools=read_only()` only when a repo role is proposed.
 - **Q4' plan-only assurance:** agy APPROVED never gates a build.
+- **Q5 two profiles:** web workers may read their fetched pages; plan reviewers are offline. Rejected: one shared profile with brain reads (prompt-injected pages could read stored plan text and exfiltrate it through `read_url`), or no file reads (agy could never produce `retrieved` claims).
 - Cosmetic batch accepted as proposed (profile path, model default and `gemini-` restriction, `provider: agy` + `model_family: gemini`, version gate, spec `provider` field, failure signals, tool audit, transcript cleanup, resume id check, docs-only Claude-side integration).
 
 ## Assumptions
@@ -68,7 +72,7 @@ agy repo reading, building, inspecting, or hosting claudex-loop; the Python SDK;
 
 ## Progress Checklist
 
-- [ ] Live profile canary (user-authorised): create profile, user logs in, then verify the stdin stream-json prompt transport with `--json-schema`, deny rules block write/command and outside reads (absolute path, `../`, symlink — any success blocks rollout), `read_url` succeeds, stdin prompt delivery, no hooks fire, transcript path/shape — record in VALIDATION.md
+- [x] Live profile canary (user-authorised): create profile, user logs in, then verify the stdin stream-json prompt transport with `--json-schema`, deny rules block write/command and outside reads (absolute path, `../`, symlink — any success blocks rollout), `read_url` succeeds, stdin prompt delivery, no hooks fire, transcript path/shape — record in VALIDATION.md
 - [x] Provider table extraction with no Claude/Codex behaviour change
 - [x] `agy-profile` subcommand and preflight
 - [x] agy command builder, stream parser, failure classification

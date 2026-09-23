@@ -2,14 +2,16 @@
 
 ## Antigravity provider status (2026-09-23)
 
-The runner now has fake-`agy` contract coverage for isolated profile preflight, Gemini-only model policy, stdin stream-json transport, terminal failure signals, transcript tool audit, exact-URL citation binding, per-worker provider settings, panel transcript cleanup, plan-only review and resume identity, and the build approval gate. These tests use temporary `HOME` directories and make no live agy or network calls. The live profile canary is **pending**: a user must log in to the separate profile, then verify stdin prompt delivery and `--json-schema`, deny rules against write/command/outside reads (absolute, `../`, symlink), successful `read_url`, no workspace hooks, and the transcript shape. A live agy plan review and mixed-provider panel are also pending. No live agy assurance is claimed from the fake tests.
+The runner has fake-`agy` contract coverage for isolated profile preflight, Gemini-only model policy, stdin stream-json transport, terminal failure signals, transcript tool audit, exact-URL citation binding, per-worker provider settings, panel transcript cleanup, plan-only review and resume identity, and the build approval gate. Tests use temporary `HOME` directories and make no live agy or network calls.
+
+Live profile canary, 2026-09-23, agy **1.2.9** with **gemini-3.8-flash-medium**: stdin `stream-json` delivered the prompt and `--json-schema` produced structured output. Under `toolPermission=request-review`, `read_url(*)` worked and every tested deny rule held: `write_to_file`, `run_command`, and `view_file` on an absolute outside path, a `../` path and a symlink were denied; no canary token leaked. Under `strict`, the same allow rule was overridden and `read_url_content` was auto-denied. Interactive login rewrote `settings.json`, dropping default-valued keys and adding `trustedWorkspaces`; it also dropped `enableTelemetry`, which is not honoured through these settings. The runner now checks the resulting settings semantically. The full transcript contained a `finish` call absent from stream tool steps; denied calls appeared as stream `ERROR` and transcript `GENERIC.status=ERROR`. `read_url_content` never returns page text: even for example.com it saves the page to `brain/<id>/.system_generated/steps/<n>/content.md` and returns that path, so with `read_file(*)` denied the model could only fall back to search summaries. A follow-up canary allowed `read_file(<profile>/.gemini/antigravity-cli/brain)` without the blanket read deny: the worker read the saved page and quoted pathlib's first sentence verbatim, while outside reads still failed (absolute path auto-denied, `../` denied) with no token leak. Browser tools are listed in `init.tools` but were unavailable in the headless toolset. The runner therefore uses two profiles: `agy-web` (web + own brain reads) and `agy-review` (no file reads, no web). A live agy plan review and mixed-provider panel remain pending.
 
 Development date: 2026-09-06. Tests run in disposable fixtures; production repositories were not built or modified by live smoke tests.
 
 ## Automated checks
 
 - `python scripts/validate.py`: active skill frontmatter, local references, both provider manifests and shared-runner presence.
-- `python -m unittest discover -s tests -v`: **81 passing tests** with fake CLI executables and real temporary Git repositories, without model calls.
+- `python -m unittest discover -s tests -v`: **85 passing tests** with fake CLI executables and real temporary Git repositories, without model calls.
 - Codex Skill Creator validator: all three active skills.
 - Codex Plugin Creator validator: `.codex-plugin/plugin.json`.
 - `git diff --check`.

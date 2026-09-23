@@ -59,6 +59,12 @@ REVIEW_SCHEMA = {
 CODEX_READONLY_DISABLE = ("apps", "plugins", "remote_plugin", "multi_agent", "image_generation",
                           "browser_use", "browser_use_external", "computer_use", "in_app_browser",
                           "skill_mcp_dependency_install")
+# Codex has no tool allowlist, so a Codex web worker also loses shell and file-viewing tools, and the
+# event audit fails the run on any item other than web_search (see confinement_findings). code_mode_host
+# stays: Codex 0.156 routes web search through it, and its JS runtime exposed no require/fetch in the
+# live probe. Code-mode executions do not appear as JSONL items, so the audit cannot see them.
+CODEX_WEB_DISABLE = CODEX_READONLY_DISABLE + ("shell_tool", "unified_exec", "view_image", "goals",
+                                              "sleep_tool", "tool_suggest", "skill_search", "hooks")
 PANEL_TOOLS = {"web": "WebSearch,WebFetch", "repo": "Read,Glob,Grep"}
 PANEL_LIMITS = {"workers": 8, "concurrency": 4, "wall_min": 60, "wall_max": 3600,
                 "id": 64, "angle": 200, "question": 500, "public_context": 2000,
@@ -67,6 +73,9 @@ PANEL_LIMITS = {"workers": 8, "concurrency": 4, "wall_min": 60, "wall_max": 3600
 # Claude CLI versions whose --restricted read confinement passed the live canary recorded in
 # VALIDATION.md. Repo workers on any other version need an explicit, recorded override.
 VALIDATED_READ_CONFINEMENT_CLI: tuple[str, ...] = ("2.1.280",)
+# Codex CLI versions whose locked-down web worker passed a live run (VALIDATION.md). Codex repo
+# workers are always refused: its read-only sandbox does not confine reads (live canary failed).
+VALIDATED_CODEX_WEB_PANEL_CLI: tuple[str, ...] = ("0.156.0",)
 CLAIM_FIELDS = ("id", "question_id", "claim", "source_type", "locator", "excerpt",
                 "confidence", "limitation")
 # Lengths are enforced by validate_panel_response; the CLI schema carries only structure.
@@ -307,9 +316,19 @@ def codex_readonly_disables(prefix: list[str], wanted: tuple = CODEX_READONLY_DI
 
 def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
             session=None, kind: str | None = None, disable: list[str] | tuple = ()) -> list[str]:
+    if mode == "panel" and provider == "codex":
+        if kind != "web":
+            raise RunError("Codex panel workers support only kind=web.")
+        args = ["exec", "--skip-git-repo-check", "--ignore-user-config", "--ephemeral", "-s", "read-only",
+                "-c", 'approval_policy="never"', "-c", 'web_search="live"', "--json",
+                "--output-schema", str(run_dir / "schema.json")]
+        for feature in disable:
+            args += ["--disable", feature]
+        args += (["-m", model] if model else []) + (["-c", f'model_reasoning_effort="{effort}"'] if effort else [])
+        return args + ["-"]
     if mode == "panel":
         if provider != "claude" or kind not in PANEL_TOOLS:
-            raise RunError("Panel workers currently run only on Claude.")
+            raise RunError("Panel workers run on Claude or Codex only.")
         # --restricted confines file tools to the working directory and ignores user/project
         # settings; stream-json exposes every tool call so citations can be checked locally.
         args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-prompts", "none",
@@ -540,7 +559,7 @@ def load_panel_spec(path: Path) -> dict:
     return spec
 
 
-def panel_prompt(spec: dict, worker: dict, plan: Path, plan_body: str) -> str:
+def panel_prompt(spec: dict, worker: dict, plan: Path, plan_body: str, provider: str = "claude") -> str:
     limits = PANEL_LIMITS
     lines = [
         "You are one worker on an adversarial research panel. Research independently and skeptically: "
@@ -558,7 +577,14 @@ def panel_prompt(spec: dict, worker: dict, plan: Path, plan_body: str) -> str:
         f"and limitations items of {limits['list_item']} characters. Do not invent sources. "
         "Report what you could not find as limitations.",
     ]
-    if worker["kind"] == "web":
+    if worker["kind"] == "web" and provider == "codex":
+        lines.append(
+            "SOURCE RULES: use web search only. source_type is \"web\". The locator is the exact URL of a "
+            "search result, and the excerpt must appear in that result's snippet or title. Return only the "
+            "requested JSON.")
+        if spec.get("public_context"):
+            lines += ["PUBLIC CONTEXT:", spec["public_context"]]
+    elif worker["kind"] == "web":
         lines.append(
             "SOURCE RULES: use WebSearch to find sources and WebFetch to read them. source_type is \"web\". "
             "The locator is the exact URL you passed to WebFetch, and the excerpt must appear in that "
@@ -657,6 +683,55 @@ def parse_panel_stream(stdout: str) -> dict:
             "total_cost_usd": final.get("total_cost_usd")}
 
 
+CODEX_NON_TOOL_ITEMS = {"agent_message", "reasoning", "error"}  # error items are provider notices
+
+
+def _codex_calls(events: list) -> list:
+    """Every Codex item that is not plain model text counts as a tool call, including items that
+    only started (the worker may have been killed) and items that failed."""
+    calls, index = [], {}
+    for event in events:
+        item = event.get("item")
+        if event.get("type") not in ("item.started", "item.completed") or not isinstance(item, dict) \
+                or item.get("type") in CODEX_NON_TOOL_ITEMS:
+            continue
+        call = {"name": item.get("type"), "input": {"query": item.get("query")},
+                "ok": event["type"] == "item.completed" and item.get("status") not in ("failed", "declined"),
+                "text": "", "structured": item}
+        key = item.get("id")
+        if key is not None and key in index:
+            calls[index[key]] = call  # the completed event supersedes the started one
+        else:
+            index[key] = len(calls)
+            calls.append(call)
+    return calls
+
+
+def codex_tool_calls(stdout: str) -> list:
+    return _codex_calls(_stream_events(stdout, strict=False))
+
+
+def parse_codex_panel_stream(stdout: str) -> dict:
+    events = _stream_events(stdout, strict=True)
+    if any(e.get("type") in ("error", "turn.failed") for e in events):
+        raise RunError("Codex reported a failed turn; inspect the captured diagnostics.")
+    started = [e.get("thread_id") for e in events if e.get("type") == "thread.started"]
+    completed = [e for e in events if e.get("type") == "turn.completed"]
+    if len(started) != 1 or len(completed) != 1:
+        raise RunError("Missing or ambiguous Codex session/completion event.")
+    try:
+        uuid.UUID(started[0])
+    except (ValueError, TypeError, AttributeError) as exc:
+        raise RunError("CLI did not return a valid session UUID.") from exc
+    messages = [e["item"].get("text") for e in events if e.get("type") == "item.completed"
+                and isinstance(e.get("item"), dict) and e["item"].get("type") == "agent_message"]
+    if not messages or not isinstance(messages[-1], str):
+        raise RunError("Codex returned no final message.")
+    return {"session_id": started[0], "response": json.loads(messages[-1]), "calls": _codex_calls(events),
+            "observed_model": None, "observed_models": [], "usage": completed[0].get("usage"),
+            "permission_denials": [], "total_cost_usd": None}
+
+
 def validate_panel_response(value, worker: dict) -> dict:
     limits = PANEL_LIMITS
     if not isinstance(value, dict) or set(value) != set(PANEL_SCHEMA["required"]):
@@ -695,10 +770,11 @@ def _inside(repo: Path, value: str) -> bool:
     return (path if path.is_absolute() else repo / path).resolve().is_relative_to(repo)
 
 
-def confinement_findings(calls: list, kind: str, repo: Path) -> tuple[list, list]:
+def confinement_findings(calls: list, kind: str, repo: Path, provider: str = "claude") -> tuple[list, list]:
     """Return (outside attempts, violations). A violation is an outside call that succeeded."""
-    # With --json-schema the CLI delivers the answer through its internal StructuredOutput tool.
-    allowed = set(PANEL_TOOLS[kind].split(",")) | {"StructuredOutput"}
+    # With --json-schema the Claude CLI delivers the answer through its internal StructuredOutput tool.
+    allowed = ({"web_search"} if provider == "codex" else
+               set(PANEL_TOOLS[kind].split(",")) | {"StructuredOutput"})
     path_keys = {"Read": ("file_path",), "Glob": ("path", "pattern"), "Grep": ("path",)}
     attempts, violations = [], []
     for call in calls:
@@ -710,7 +786,8 @@ def confinement_findings(calls: list, kind: str, repo: Path) -> tuple[list, list
                     outside.append(value)
         for target in outside:
             attempts.append({"tool": call["name"], "target": target, "succeeded": call["ok"]})
-            if call["ok"]:
+            # Codex cannot deny a tool it exposes, so any disallowed Codex item is a violation.
+            if call["ok"] or (provider == "codex" and call["name"] not in allowed):
                 violations.append(attempts[-1])
     return attempts, violations
 
@@ -730,7 +807,7 @@ def _norm_url(url: str) -> str:
     return str(url).strip().rstrip("/")
 
 
-def verify_claims(claims: list, calls: list, kind: str, repo: Path) -> list[str]:
+def verify_claims(claims: list, calls: list, kind: str, repo: Path, provider: str = "claude") -> list[str]:
     """Check each claim against this worker's own tool records only; never touch the network.
 
     retrieved = the tool really returned the excerpt for that source; unverified = the source was
@@ -738,6 +815,23 @@ def verify_claims(claims: list, calls: list, kind: str, repo: Path) -> list[str]
     """
     ok = [call for call in calls if call["ok"]]
     statuses = []
+    if kind == "web" and provider == "codex":
+        results, seen = [], set()
+        for call in ok:
+            item = call["structured"] if isinstance(call["structured"], dict) else {}
+            action = item.get("action") if isinstance(item.get("action"), dict) else {}
+            if isinstance(action.get("url"), str):
+                seen.add(action["url"].strip())
+            for result in item.get("results") or []:
+                if isinstance(result, dict) and isinstance(result.get("url"), str):
+                    url = result["url"].strip()  # exact: /a and /a/ may serve different pages
+                    seen.add(url)
+                    results.append((url, _norm_markdown(f"{result.get('title', '')}\n{result.get('snippet', '')}")))
+        for claim in claims:
+            locator, excerpt = claim["locator"].strip(), _norm_markdown(claim["excerpt"])
+            statuses.append("retrieved" if any(url == locator and excerpt in text for url, text in results) else
+                            "unverified" if locator in seen else "mismatch")
+        return statuses
     if kind == "web":
         fetches, seen = [], set()
         for call in ok:
@@ -805,7 +899,7 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
     child = ctx["run_dir"] / f"w{index:02d}-{worker['id']}"
     child.mkdir(mode=0o700)
     record = {key: worker[key] for key in ("id", "kind", "angle", "question_ids")}
-    record.update(provider=ctx["provider"], harness="claude-code", artifacts=str(child),
+    record.update(provider=ctx["provider"], harness=ctx["harness"], artifacts=str(child),
                   status="running", requested_model=ctx["model"], requested_effort=ctx["effort"])
     try:
         if ctx["stop"].is_set():
@@ -814,8 +908,10 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
         if worker["kind"] == "web":
             cwd = child / "cwd"
             cwd.mkdir(mode=0o700)
+        if ctx["provider"] == "codex":
+            save(child / "schema.json", PANEL_SCHEMA)
         argv = ctx["prefix"] + command(ctx["provider"], "panel", child, ctx["model"], ctx["effort"],
-                                       kind=worker["kind"])
+                                       kind=worker["kind"], disable=ctx["disable"])
         save(child / "command.json", argv)
         (child / "prompt.txt").write_text(prompt, encoding="utf-8")
         try:
@@ -825,21 +921,22 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
             # the run even when the worker later crashed, timed out or was killed.
             stdout_path = child / "stdout.txt"
             stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
-            attempts, violations = confinement_findings(tool_calls(stdout), worker["kind"], ctx["repo"])
+            calls = codex_tool_calls(stdout) if ctx["provider"] == "codex" else tool_calls(stdout)
+            attempts, violations = confinement_findings(calls, worker["kind"], ctx["repo"], ctx["provider"])
             record["read_confinement_attempts"] = attempts
             if violations:
                 record.update(status="confinement_violation", confinement_violations=violations)
         record["exit_code"] = code
         if violations:
-            raise RunError("Worker read outside the repository.")
+            raise RunError("Worker read outside the repository or used a disallowed tool.")
         if code:
             raise RunError(f"{ctx['provider']} exited {code}; inspect stdout.txt and stderr.txt.")
-        parsed = parse_panel_stream(stdout)
+        parsed = parse_codex_panel_stream(stdout) if ctx["provider"] == "codex" else parse_panel_stream(stdout)
         record.update({key: parsed[key] for key in ("session_id", "observed_model", "observed_models",
                                                     "usage", "permission_denials", "total_cost_usd")},
                       tool_calls=len(parsed["calls"]))
         response = validate_panel_response(parsed["response"], worker)
-        statuses = verify_claims(response["claims"], parsed["calls"], worker["kind"], ctx["repo"])
+        statuses = verify_claims(response["claims"], parsed["calls"], worker["kind"], ctx["repo"], ctx["provider"])
         record["claims"] = [dict(claim, status=status, worker_id=worker["id"])
                             for claim, status in zip(response["claims"], statuses)]
         record["response"] = {key: response[key] for key in ("summary", "coverage", "limitations")}
@@ -863,18 +960,20 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
     provider = args.provider or roles["reviewer"]
     if provider == args.host:
         raise RunError("Panel workers must be the provider opposite the host.")
-    if provider != "claude":
-        raise RunError("Codex panel workers are not yet supported; run the panel from a Codex host.")
     if args.fallback_from or args.resume:
         raise RunError("Panel runs always start fresh sessions and have no fallback path.")
     if not args.spec:
         raise RunError("panel requires --spec panel.json.")
     spec_path = Path(args.spec).resolve(strict=True)
     spec = load_panel_spec(spec_path)
+    if provider == "codex" and any(w["kind"] == "repo" for w in spec["workers"]):
+        raise RunError("Codex repo workers are refused: Codex's read-only sandbox does not confine reads. "
+                       "Use web workers, or run repo research from a Codex host with Claude workers.")
     plan_body = plan.read_bytes().decode("utf-8-sig")
-    prompts = {w["id"]: panel_prompt(spec, w, plan, plan_body) for w in spec["workers"]}
+    prompts = {w["id"]: panel_prompt(spec, w, plan, plan_body, provider) for w in spec["workers"]}
     model, effort = spec.get("model") or args.model, spec.get("effort") or args.effort
-    payload = panel_payload_sha256({"spec": spec, "model": model, "effort": effort}, prompts)
+    payload = panel_payload_sha256({"spec": spec, "provider": provider, "model": model, "effort": effort},
+                                   prompts)
     if args.dry_run:
         print(json.dumps({
             "launches": len(spec["workers"]), "concurrency": spec["concurrency"],
@@ -895,18 +994,27 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
     if probes[0].returncode or not probes[0].stdout.strip():
         raise RunError("CLI version probe failed. Check the resolved executable before retrying.")
     cli_version = probes[0].stdout.decode("utf-8", errors="replace").strip()
-    if b"--restricted" not in probes[1].stdout:
-        raise RunError("This Claude CLI lacks --restricted; panel workers cannot be confined.")
-    validated = cli_version.split()[0] in VALIDATED_READ_CONFINEMENT_CLI
-    if any(w["kind"] == "repo" for w in spec["workers"]) and not validated and not args.allow_unvalidated_cli:
-        raise RunError(f"Claude CLI {cli_version} has no recorded read-confinement canary; repo workers are "
-                       "refused. Run the canary, or pass --allow-unvalidated-cli to accept that risk.")
+    disable = []
+    if provider == "codex":
+        disable = codex_readonly_disables(prefix, CODEX_WEB_DISABLE, ("shell_tool", "view_image", "apps"))
+        validated = cli_version.split()[-1] in VALIDATED_CODEX_WEB_PANEL_CLI
+        if not validated and not args.allow_unvalidated_cli:
+            raise RunError(f"Codex CLI {cli_version} has no recorded live web-panel validation; Codex workers "
+                           "are refused. Validate it, or pass --allow-unvalidated-cli to accept that risk.")
+    else:
+        if b"--restricted" not in probes[1].stdout:
+            raise RunError("This Claude CLI lacks --restricted; panel workers cannot be confined.")
+        validated = cli_version.split()[0] in VALIDATED_READ_CONFINEMENT_CLI
+        if any(w["kind"] == "repo" for w in spec["workers"]) and not validated and not args.allow_unvalidated_cli:
+            raise RunError(f"Claude CLI {cli_version} has no recorded read-confinement canary; repo workers are "
+                           "refused. Run the canary, or pass --allow-unvalidated-cli to accept that risk.")
+    harness = "codex-cli" if provider == "codex" else "claude-code"
     run_dir = make_run_dir(args, repo)
-    record = {"status": "running", "mode": "panel", "provider": provider, "harness": "claude-code",
+    record = {"status": "running", "mode": "panel", "provider": provider, "harness": harness,
               "roles": roles, "repo": str(repo), "plan": str(plan), "plan_sha256": digest(plan_body.encode("utf-8")),
               "spec": str(spec_path), "spec_sha256": digest(spec_path.read_bytes()), "payload_sha256": payload,
               "requested_model": model, "requested_effort": effort, "cli_version": cli_version,
-              "executable": prefix, "read_confinement_validated": validated,
+              "executable": prefix, "cli_validated": validated, "disabled_features": disable,
               "allow_unvalidated_cli": bool(args.allow_unvalidated_cli),
               "attempted_assurance": "cross_provider_panel", "concurrency": spec["concurrency"],
               "wall_clock_seconds": spec["wall_clock_seconds"], "started_at": time.time(),
@@ -914,7 +1022,8 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
     save(run_dir / "result.json", record)
     print(json.dumps({"provider": provider, "mode": "panel", "launches": len(spec["workers"]),
                       "artifacts": str(run_dir)}), flush=True)
-    ctx = {"run_dir": run_dir, "repo": repo, "provider": provider, "prefix": prefix, "model": model,
+    ctx = {"run_dir": run_dir, "repo": repo, "provider": provider, "harness": harness,
+           "disable": disable, "prefix": prefix, "model": model,
            "effort": effort, "timeout": min(args.timeout, spec["wall_clock_seconds"]),
            "live": set(), "stop": threading.Event()}
     deadline = time.monotonic() + spec["wall_clock_seconds"]
@@ -960,7 +1069,7 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
                   coverage=coverage, under_covered=under)
     if stop_reason or violation:
         record.update(status="failed", error=stop_reason or
-                      "A repo worker read outside the repository; no panel.json was written.")
+                      "A worker read outside the repository or used a disallowed tool; no panel.json was written.")
     else:
         flagged = sorted(w["id"] for w in workers if w.get("claim_status_counts", {}).get("mismatch"))
         failed = [w["id"] for w in workers if w["status"] != "completed"]

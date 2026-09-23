@@ -133,7 +133,7 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 
 ## Research panel
 
-From a Codex host, `panel` mode fans research out to fresh, read-only Claude workers: web workers that never see the repository, and repo workers confined to it by Claude's `--restricted` mode. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
+`panel` mode fans research out to fresh, read-only workers from the other provider. From a Codex host: Claude web workers that never see the repository, and Claude repo workers confined to it by `--restricted`. From a Claude host: web-only Codex workers with shell, file-viewing and connector tools disabled. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
 
 ## What an approval means
 

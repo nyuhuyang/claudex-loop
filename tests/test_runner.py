@@ -39,7 +39,7 @@ if sys.argv[1:3] == ['features', 'list']:
     print('\n'.join(r for r in rows if r.split()[0] != os.environ.get('FAKE_FEATURES_DROP')))
     sys.exit(0)
 prompt = sys.stdin.read()
-if '--verbose' in sys.argv and os.environ.get('FAKE_PANEL_DIR'):
+if ('--verbose' in sys.argv or '--ignore-user-config' in sys.argv) and os.environ.get('FAKE_PANEL_DIR'):
     # Panel worker: record what it received, optionally stay alive, then replay its script.
     import re
     worker = re.search(r'^WORKER ID: (\S+)$', prompt, re.M).group(1)
@@ -525,6 +525,21 @@ def stream(session, calls, response, model="claude-test"):
     return "\n".join(json.dumps(event) for event in events) + "\n"
 
 
+def codex_stream(thread, searches, value, extra_items=()):
+    """Codex JSONL in the shape observed from Codex CLI 0.155.1 with web_search="live"."""
+    events = [{"type": "thread.started", "thread_id": thread}, {"type": "turn.started"}]
+    for index, (query, results) in enumerate(searches):
+        events.append({"type": "item.completed", "item": {
+            "id": f"ws{index}", "type": "web_search", "query": query, "action": {"type": "search", "query": query},
+            "results": [{"type": "text_result", "url": u, "title": title, "snippet": snippet}
+                        for u, title, snippet in results]}})
+    events += [{"type": "item.completed", "item": item} for item in extra_items]
+    events.append({"type": "item.completed", "item": {"id": "final", "type": "agent_message",
+                                                       "text": json.dumps(value)}})
+    events.append({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 2}})
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
 def fetch(url, body, ok=True):
     return ("WebFetch", {"url": url, "prompt": "quote it"}, ok, body, {"url": url, "code": 200, "result": body})
 
@@ -582,29 +597,30 @@ class PanelTests(unittest.TestCase):
     def script(self, worker, calls, value):
         (self.fake / f"{worker}.jsonl").write_text(stream(self.SESSIONS[worker], calls, value))
 
-    def call(self, *args, validated=True, env=None):
+    def call(self, *args, validated=True, env=None, host="codex"):
         output, error = io.StringIO(), io.StringIO()
         variables = {"FAKE_PANEL_DIR": str(self.fake), **(env or {})}
         with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.cli)]), \
              patch.object(runner, "VALIDATED_READ_CONFINEMENT_CLI", ("fake-cli",) if validated else ()), \
+             patch.object(runner, "VALIDATED_CODEX_WEB_PANEL_CLI", ("1.0",) if validated else ()), \
              patch.dict(os.environ, variables), \
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
-            code = runner.main(["panel", "--host", "codex", "--repo", str(self.repo), "--plan", str(self.plan),
+            code = runner.main(["panel", "--host", host, "--repo", str(self.repo), "--plan", str(self.plan),
                                 "--artifacts", str(self.artifacts), *args])
         return code, output.getvalue(), error.getvalue()
 
-    def dry_run(self, spec=None):
+    def dry_run(self, spec=None, host="codex"):
         path = self.root / "panel.json"
         path.write_text(json.dumps(spec or self.spec))
-        code, out, error = self.call("--spec", str(path), "--dry-run")
+        code, out, error = self.call("--spec", str(path), "--dry-run", host=host)
         return code, (json.loads(out) if code == 0 else None), error
 
-    def launch(self, spec=None, extra=(), **kwargs):
-        code, dry, error = self.dry_run(spec)
+    def launch(self, spec=None, extra=(), host="codex", **kwargs):
+        code, dry, error = self.dry_run(spec, host)
         self.assertEqual(code, 0, error)
         old = set(self.artifacts.glob("claudex-*/result.json")) if self.artifacts.exists() else set()
         code, _, error = self.call("--spec", str(self.root / "panel.json"),
-                                   "--payload-sha256", dry["payload_sha256"], *extra, **kwargs)
+                                   "--payload-sha256", dry["payload_sha256"], *extra, host=host, **kwargs)
         new = set(self.artifacts.glob("claudex-*/result.json")) - old if self.artifacts.exists() else set()
         self.assertLessEqual(len(new), 1)
         record = json.loads(next(iter(new)).read_text()) if new else None
@@ -827,23 +843,20 @@ class PanelTests(unittest.TestCase):
         code, record, _, _ = self.launch(extra=("--allow-unvalidated-cli",), validated=False)
         self.assertEqual(code, 0, record)
         self.assertTrue(record["allow_unvalidated_cli"])
-        self.assertFalse(record["read_confinement_validated"])
+        self.assertFalse(record["cli_validated"])
         web_only = dict(self.spec, workers=self.spec["workers"][:2])
         code, record, _, _ = self.launch(web_only, validated=False)
         self.assertEqual(code, 0, record)
 
-    def test_panel_roles_are_cross_provider_and_claude_only(self):
+    def test_panel_roles_are_cross_provider_and_codex_repo_workers_refused(self):
         path = self.root / "panel.json"
         path.write_text(json.dumps(self.spec))
         code, _, error = self.call("--spec", str(path), "--dry-run", "--provider", "codex")
         self.assertEqual(code, 1)
         self.assertIn("opposite", error)
-        output, error = io.StringIO(), io.StringIO()
-        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
-            code = runner.main(["panel", "--host", "claude", "--repo", str(self.repo), "--plan", str(self.plan),
-                                "--spec", str(path), "--dry-run"])
+        code, _, error = self.call("--spec", str(path), "--dry-run", host="claude")
         self.assertEqual(code, 1)
-        self.assertIn("not yet supported", error.getvalue())
+        self.assertIn("Codex repo workers are refused", error)
 
     def assert_no_live_workers(self, workers):
         time.sleep(0.4)
@@ -884,6 +897,84 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(record["error"], "Panel was interrupted.")
         self.assert_no_live_workers(["w1", "w2", "w3"])
+
+    def codex_web_spec(self):
+        return dict(self.spec, workers=self.spec["workers"][:2])
+
+    def codex_script(self, worker, searches, value, extra_items=()):
+        (self.fake / f"{worker}.jsonl").write_text(codex_stream(self.SESSIONS[worker], searches, value, extra_items))
+
+    def test_claude_host_runs_locked_down_codex_web_workers(self):
+        self.codex_script("w1", [("alpha", [("https://a.example/doc", "Alpha docs", "Alpha is **stable** since 2026.")])],
+                          response(claim("https://a.example/doc", "alpha is stable since 2026")))
+        self.codex_script("w2", [("alpha", [("https://b.example/y", "Beta", "Beta says alpha works.")])],
+                          response(claim("https://b.example/y", "alpha works")))
+        code, record, dry, error = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual((record["provider"], record["harness"], record["status"]), ("codex", "codex-cli", "completed"))
+        self.assertEqual(record["assurance"], "cross_provider_panel")
+        self.assertEqual(record["disabled_features"], ["apps", "plugins", "shell_tool", "view_image"])
+        argv = json.loads((self.fake / "w1.argv.json").read_text())
+        for flag in ("--ignore-user-config", "--ephemeral", 'web_search="live"', "read-only", "--output-schema"):
+            self.assertIn(flag, argv)
+        self.assertNotIn("resume", argv)
+        self.assertIn("web search only", dry["web_worker_prompts"]["w1"])
+        self.assertNotIn("SECRET-PLAN-BODY", (self.fake / "w1.stdin.txt").read_text(encoding="utf-8"))
+
+    def test_codex_citations_bind_to_the_result_snippet_for_that_url(self):
+        calls = runner.parse_codex_panel_stream(codex_stream(self.SESSIONS["w1"], [
+            ("q", [("https://a.example/", "A", "Alpha is stable."), ("https://b.example/", "B", "Beta text.")])],
+            response()))["calls"]
+        cases = [(claim("https://a.example/", "alpha is stable"), "retrieved"),
+                 (claim("https://a.example", "alpha is stable"), "mismatch"),
+                 (claim("https://a.example/", "beta text"), "unverified"),
+                 (claim("https://never.example/", "alpha is stable"), "mismatch")]
+        self.assertEqual(runner.verify_claims([c for c, _ in cases], calls, "web", self.repo, "codex"),
+                         [expected for _, expected in cases])
+
+    def test_any_codex_item_beyond_web_search_fails_the_run(self):
+        self.codex_script("w1", [("alpha", [("https://a.example/doc", "A", "Alpha is stable.")])],
+                          response(claim("https://a.example/doc", "alpha is stable")),
+                          extra_items=[{"id": "e", "type": "error", "message": "provider notice"},
+                                       {"id": "x", "type": "command_execution", "command": "cat ~/.ssh/id_rsa",
+                                        "aggregated_output": "FAKE-KEY", "exit_code": 0, "status": "completed"}])
+        self.codex_script("w2", [("alpha", [("https://b.example/y", "B", "Beta says alpha works.")])],
+                          response(claim("https://b.example/y", "alpha works")))
+        code, record, _, _ = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+        self.assertNotIn("FAKE-KEY", json.dumps(record))
+
+    def test_failed_or_merely_started_disallowed_codex_items_fail_the_run(self):
+        good = response(claim("https://b.example/y", "alpha works"))
+        searches = [("alpha", [("https://b.example/y", "B", "Beta says alpha works.")])]
+        failed_exec = {"id": "x", "type": "command_execution", "command": "cat secret", "status": "failed"}
+        self.codex_script("w1", searches, good, extra_items=[failed_exec])
+        self.codex_script("w2", searches, good)
+        code, record, _, _ = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual((code, record["status"]), (1, "failed"))
+        # An otherwise successful stream whose only trace of the tool is an item.started event.
+        lines = codex_stream(self.SESSIONS["w1"], searches, good).splitlines()
+        lines.insert(2, json.dumps({"type": "item.started",
+                                    "item": {"id": "y", "type": "mcp_tool_call", "status": "in_progress"}}))
+        (self.fake / "w1.jsonl").write_text("\n".join(lines) + "\n")
+        code, record, _, _ = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual((code, record["status"]), (1, "failed"))
+        worker = next(w for w in record["workers"] if w["id"] == "w1")
+        self.assertEqual(worker["status"], "confinement_violation")
+        self.assertEqual(worker["read_confinement_attempts"][0]["tool"], "mcp_tool_call")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+
+    def test_codex_panel_requires_core_features_in_the_probe(self):
+        code, _, _, error = self.launch(self.codex_web_spec(), host="claude", env={"FAKE_FEATURES_DROP": "view_image"})
+        self.assertEqual(code, 1)
+        self.assertIn("view_image", error)
+
+    def test_unvalidated_codex_cli_is_refused_without_override(self):
+        code, _, _, error = self.launch(self.codex_web_spec(), host="claude", validated=False)
+        self.assertEqual(code, 1)
+        self.assertIn("live web-panel validation", error)
 
 
 if __name__ == "__main__":

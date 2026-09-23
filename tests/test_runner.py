@@ -29,6 +29,15 @@ if '--version' in sys.argv:
 if '--help' in sys.argv:
     print('' if os.environ.get('FAKE_NO_RESTRICTED') else '  --restricted  Restricted mode')
     sys.exit(0)
+if sys.argv[1:3] == ['features', 'list']:
+    if os.environ.get('FAKE_FEATURES_FAIL'):
+        sys.exit(2)
+    if os.environ.get('FAKE_FEATURES_EMPTY'):
+        sys.exit(0)
+    rows = ['apps  stable  true', 'plugins  stable  true', 'shell_tool  stable  true',
+            'view_image  stable  true', 'search_tool  removed  false']
+    print('\n'.join(r for r in rows if r.split()[0] != os.environ.get('FAKE_FEATURES_DROP')))
+    sys.exit(0)
 prompt = sys.stdin.read()
 if '--verbose' in sys.argv and os.environ.get('FAKE_PANEL_DIR'):
     # Panel worker: record what it received, optionally stay alive, then replay its script.
@@ -179,6 +188,29 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("--safe-mode", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(args[args.index("--permission-mode")+1], "dontAsk")
+
+    def test_codex_readonly_runs_disable_connector_features_that_exist(self):
+        code, record, path, _ = self.invoke("claude")
+        self.assertEqual(code, 0, record)
+        argv = json.loads((path.parent / "command.json").read_text())
+        disabled = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"]
+        self.assertEqual(disabled, ["apps", "plugins"])
+        self.assertEqual(record["disabled_features"], ["apps", "plugins"])
+        with patch.dict(os.environ, {"FAKE_FEATURES_EMPTY": "1"}):
+            code, record, _, _ = self.invoke("claude")
+        self.assertEqual(code, 1)
+        self.assertIn("no recognizable features", record["error"])
+        with patch.dict(os.environ, {"FAKE_FEATURES_DROP": "apps"}):
+            code, record, _, _ = self.invoke("claude")
+        self.assertEqual(code, 1)
+        self.assertIn("apps", record["error"])
+        code, record, path, _ = self.invoke("claude", mode="build", case="build",
+                                            extra=("--builder", "codex", "--unreviewed-spec", "--proof", "true"))
+        self.assertNotIn("--disable", json.loads((path.parent / "command.json").read_text()))
+        with patch.dict(os.environ, {"FAKE_FEATURES_FAIL": "1"}):
+            code, record, _, _ = self.invoke("claude")
+        self.assertEqual(code, 1)
+        self.assertIn("feature probe failed", record["error"])
 
     def test_codex_resume_keeps_read_only_and_explicit_session(self):
         args = runner.command("codex", "review", self.root, session=SESSION)

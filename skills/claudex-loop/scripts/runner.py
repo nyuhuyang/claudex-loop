@@ -53,6 +53,12 @@ REVIEW_SCHEMA = {
     },
     "required": ["verdict", "summary", "findings", "coverage", "limitations"],
 }
+# Codex features that give a read-only reviewer external side effects the filesystem sandbox does
+# not constrain (e.g. the apps connectors expose GitHub write tools). Shell stays: Codex reads
+# files through it. Only features the installed CLI lists are disabled; unknown names are errors.
+CODEX_READONLY_DISABLE = ("apps", "plugins", "remote_plugin", "multi_agent", "image_generation",
+                          "browser_use", "browser_use_external", "computer_use", "in_app_browser",
+                          "skill_mcp_dependency_install")
 PANEL_TOOLS = {"web": "WebSearch,WebFetch", "repo": "Read,Glob,Grep"}
 PANEL_LIMITS = {"workers": 8, "concurrency": 4, "wall_min": 60, "wall_max": 3600,
                 "id": 64, "angle": 200, "question": 500, "public_context": 2000,
@@ -280,8 +286,27 @@ def validate_review(value) -> dict:
     return value
 
 
+def codex_readonly_disables(prefix: list[str], wanted: tuple = CODEX_READONLY_DISABLE,
+                            required: tuple = ()) -> list[str]:
+    """Disable the wanted features the CLI knows; fail closed if the probe output is unusable."""
+    probe = subprocess.run(prefix + ["features", "list"], capture_output=True,
+                           stdin=subprocess.DEVNULL, timeout=30)
+    if probe.returncode:
+        raise RunError("Codex feature probe failed; cannot disable connector tools for a read-only run.")
+    # Rows look like "name   stage   true|false".
+    known = {parts[0] for parts in (line.split() for line in
+                                    probe.stdout.decode("utf-8", errors="replace").splitlines())
+             if len(parts) >= 3 and parts[-1] in ("true", "false")}
+    if not known:
+        raise RunError("Codex feature probe returned no recognizable features; refusing a read-only run.")
+    missing = [feature for feature in required if feature not in known]
+    if missing:
+        raise RunError(f"Codex no longer lists {', '.join(missing)}; cannot prove those tools are disabled.")
+    return [feature for feature in wanted if feature in known]
+
+
 def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
-            session=None, kind: str | None = None) -> list[str]:
+            session=None, kind: str | None = None, disable: list[str] | tuple = ()) -> list[str]:
     if mode == "panel":
         if provider != "claude" or kind not in PANEL_TOOLS:
             raise RunError("Panel workers currently run only on Claude.")
@@ -302,6 +327,8 @@ def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
         args += ["-c", 'approval_policy="never"', "--json", "-o", str(run_dir / "reply.txt")]
         if review:
             args += ["--skip-git-repo-check", "--output-schema", str(run_dir / "schema.json")]
+            for feature in disable:
+                args += ["--disable", feature]
         if model:
             args += ["-m", model]
         if effort:
@@ -1080,8 +1107,12 @@ def run(args) -> int:
             raise RunError("CLI version probe failed. Check the resolved executable before retrying.")
         record["cli_version"] = version.stdout.decode("utf-8", errors="replace").strip()
         record["executable"] = prefix
+        disable = (codex_readonly_disables(prefix, required=("apps",))
+                   if provider == "codex" and args.mode in ("review", "inspect") else [])
+        if disable:
+            record["disabled_features"] = disable
         argv = prefix + command(provider, args.mode, run_dir, args.model, args.effort,
-                                previous["session_id"] if previous else None)
+                                previous["session_id"] if previous else None, disable=disable)
         save(run_dir / "command.json", argv)
         print(json.dumps({"provider": provider, "model": args.model or "CLI default (unresolved)",
                           "mode": args.mode, "artifacts": str(run_dir)}), flush=True)

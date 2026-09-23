@@ -32,8 +32,24 @@ if case == 'timeout':
 if case == 'exit':
     print('Authentication failed', file=sys.stderr)
     sys.exit(7)
+if case == 'quota':
+    print('Usage limit reached; quota exhausted', file=sys.stderr)
+    sys.exit(7)
 if case == 'empty':
     sys.exit(0)
+if case in ('claude_429', 'claude_result_spoof', 'claude_400'):
+    # Shape of a real Claude Code 2.1.277 spend-limit response: the reason text sits in
+    # the model-authored `result` field; only api_error_status/terminal_reason are structured.
+    value = {'type':'result','subtype':'success','is_error':True,'num_turns':1,
+             'session_id':'12345678-1234-4567-8123-123456789abc',
+             'result':"You've hit your individual spend limit",
+             'terminal_reason':'api_error','api_error_status':429}
+    if case == 'claude_result_spoof':
+        del value['terminal_reason'], value['api_error_status']
+    if case == 'claude_400':
+        value['api_error_status'] = 400
+    print(json.dumps(value))
+    sys.exit(1)
 if case == 'mutate_plan':
     pathlib.Path(os.environ['FAKE_PLAN']).write_text('Changed after launch')
 if case == 'mutate_code':
@@ -126,6 +142,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(record["plan_sha256"], runner.digest(self.plan.read_bytes()))
                 self.assertIn(str(self.plan), (path.parent / "prompt.txt").read_text())
                 self.assertEqual(record["response"]["verdict"], "APPROVED")
+                self.assertEqual(record["assurance"], "cross_provider")
 
     def test_unpinned_and_explicit_model_selection(self):
         for provider in runner.PROVIDERS:
@@ -224,6 +241,150 @@ class RunnerTests(unittest.TestCase):
         code, record, _, _ = self.invoke(case="timeout", extra=("--timeout", "1"))
         self.assertEqual(code, 1)
         self.assertIn("timed out", record["error"])
+        self.assertEqual(record["failure_kind"], "provider_unavailable")
+        self.assertTrue(record["fallback_eligible"])
+
+    def test_quota_failure_allows_honest_fresh_same_provider_review(self):
+        code, failed, primary, _ = self.invoke("codex", case="quota")
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["provider"], "claude")
+        self.assertEqual(failed["failure_kind"], "provider_unavailable")
+        self.assertTrue(failed["fallback_eligible"])
+
+        code, record, path, _ = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["provider"], "codex")
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.assertEqual(record["fallback_session_state"], "fresh")
+        self.assertEqual(record["fallback_from"], str(primary.resolve()))
+        self.assertIn("DEGRADED_SAME_PROVIDER", record["response"]["limitations"][-1])
+        self.assertIn("DEGRADED SAME-PROVIDER FALLBACK", (path.parent / "prompt.txt").read_text())
+        self.assertNotIn("resume", json.loads((path.parent / "command.json").read_text()))
+
+    def test_fallback_reviewer_can_resume_after_plan_revision(self):
+        _, _, primary, _ = self.invoke("codex", case="quota")
+        extra = ("--provider", "codex", "--fallback-from", str(primary))
+        code, record, fallback_result, _ = self.invoke("codex", case="revise", extra=extra)
+        self.assertEqual(code, 0, record)
+        self.plan.write_text("Revised after fallback findings", encoding="utf-8")
+        code, record, _, _ = self.invoke(
+            "codex", extra=extra + ("--resume", str(fallback_result)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.assertEqual(record["session_id"], SESSION)
+        self.assertEqual(record["fallback_session_state"], "resumed")
+        self.assertIn("resumed its prior", record["response"]["limitations"][-1])
+
+    def test_non_availability_failure_cannot_authorize_fallback(self):
+        code, failed, primary, _ = self.invoke("codex", case="malformed")
+        self.assertEqual(code, 1)
+        self.assertFalse(failed["fallback_eligible"])
+        code, record, _, error = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("not eligible", error)
+
+    def test_user_interruption_is_not_fallback_eligible(self):
+        kind, eligible = runner.classify_failure(
+            "Run was interrupted; no approval recorded.", self.root, "codex")
+        self.assertEqual(kind, "provider_failure")
+        self.assertFalse(eligible)
+
+    def test_review_content_cannot_spoof_fallback_eligibility(self):
+        self.root.joinpath("stdout.txt").write_text("quota exhausted", encoding="utf-8")
+        kind, eligible = runner.classify_failure("Invalid review verdict.", self.root, "codex")
+        self.assertEqual(kind, "provider_failure")
+        self.assertFalse(eligible)
+
+    def test_agent_message_cannot_spoof_failed_turn_eligibility(self):
+        events = [
+            {"type": "agent_message", "text": "The plan discusses a quota."},
+            {"type": "turn.failed", "error": {"message": "repository read failed"}},
+        ]
+        self.root.joinpath("stdout.txt").write_text(
+            "\n".join(json.dumps(event) for event in events), encoding="utf-8")
+        kind, eligible = runner.classify_failure(
+            "Codex reported a failed turn; inspect the captured diagnostics.",
+            self.root, "codex")
+        self.assertEqual(kind, "provider_failure")
+        self.assertFalse(eligible)
+
+    def test_structured_quota_failure_is_fallback_eligible(self):
+        event = {"type": "turn.failed", "error": {"message": "usage limit reached"}}
+        self.root.joinpath("stdout.txt").write_text(json.dumps(event), encoding="utf-8")
+        kind, eligible = runner.classify_failure(
+            "Codex reported a failed turn; inspect the captured diagnostics.",
+            self.root, "codex")
+        self.assertEqual(kind, "provider_unavailable")
+        self.assertTrue(eligible)
+
+    def test_claude_structured_429_is_fallback_eligible(self):
+        code, failed, primary, _ = self.invoke("codex", case="claude_429")
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["failure_kind"], "provider_unavailable")
+        self.assertTrue(failed["fallback_eligible"])
+        code, record, _, _ = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+
+    def test_claude_result_text_cannot_spoof_fallback_eligibility(self):
+        for case in ("claude_result_spoof", "claude_400"):
+            with self.subTest(case=case):
+                code, failed, _, _ = self.invoke("codex", case=case)
+                self.assertEqual(code, 1)
+                self.assertEqual(failed["failure_kind"], "provider_failure")
+                self.assertFalse(failed["fallback_eligible"])
+
+    def test_claude_api_status_policy(self):
+        base = {"type": "result", "subtype": "success", "is_error": True,
+                "terminal_reason": "api_error", "result": "model text"}
+        for status, expected in ((429, True), (401, True), (500, True), (520, True), (599, True),
+                                 (400, False), (403, False), (600, False), ("429", False),
+                                 (True, False), ([429], False), ({"code": 429}, False)):
+            with self.subTest(status=status):
+                self.root.joinpath("stdout.txt").write_text(
+                    json.dumps(dict(base, api_error_status=status)), encoding="utf-8")
+                kind, eligible = runner.classify_failure(
+                    "claude exited 1; inspect stdout.txt and stderr.txt.", self.root, "claude")
+                self.assertEqual(eligible, expected)
+                self.assertEqual(kind, "provider_unavailable" if expected else "provider_failure")
+
+    def test_quota_failure_allows_fresh_same_provider_inspection(self):
+        extra = ("--base", self.base, "--builder", "codex")
+        code, failed, primary, _ = self.invoke("codex", mode="inspect", case="quota", extra=extra)
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["provider"], "claude")
+        code, record, _, _ = self.invoke(
+            "codex", mode="inspect",
+            extra=extra + ("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.assertIsNone(record["previous"])
+
+    def test_inspection_fallback_requires_the_failed_snapshot(self):
+        extra = ("--base", self.base, "--builder", "codex")
+        _, _, primary, _ = self.invoke("codex", mode="inspect", case="quota", extra=extra)
+        self.repo.joinpath("after_failure.py").write_text("changed\n", encoding="utf-8")
+        code, record, _, error = self.invoke(
+            "codex", mode="inspect",
+            extra=extra + ("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("Code changed after", error)
+
+    def test_build_preserves_degraded_approval_assurance(self):
+        _, _, primary, _ = self.invoke("codex", case="quota")
+        _, approval, approval_path, _ = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(approval["assurance"], "degraded_same_provider")
+        code, record, _, _ = self.invoke(
+            "codex", mode="build", case="build",
+            extra=("--builder", "codex", "--approval", str(approval_path), "--proof", "test"))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["approval_assurance"], "degraded_same_provider")
 
     def test_unique_artifacts_and_failed_round_does_not_reuse_reply(self):
         _, _, first, _ = self.invoke()

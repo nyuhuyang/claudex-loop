@@ -13,6 +13,17 @@ python RUNNER review --host claude --repo PROJECT --plan docs/implementation.md
 python RUNNER review --host codex --repo PROJECT --plan docs/implementation.md
 ```
 
+The default policy first attempts the other provider. If its failed `result.json` records `failure_kind=provider_unavailable` and `fallback_eligible=true`, the host automatically starts a fresh same-provider review:
+
+```text
+python RUNNER review --host codex --provider codex --repo PROJECT --plan docs/implementation.md --fallback-from FAILED_CLAUDE_RESULT
+python RUNNER review --host claude --provider claude --repo PROJECT --plan docs/implementation.md --fallback-from FAILED_CODEX_RESULT
+```
+
+This fallback is accepted only for quota, authentication, missing CLI, service-unavailable or timeout failures. Eligibility is read only from provider-controlled evidence — process status, stderr, Codex `error`/`turn.failed` events, and Claude's `terminal_reason=api_error` with `api_error_status` 401, 429 or 5xx — never from model-authored text such as Claude's `result` or Codex's `agent_message`. The runner rejects fallback evidence from malformed reviews, `REVISE`/`BLOCKED`, repository mutation, interruption, or other non-availability failures. A fallback review starts fresh; later plan revisions resume that fallback session while retaining the original `--fallback-from` evidence.
+
+The coordinating host must still be running to launch the fallback. If the host process itself exhausts quota and exits, restart the workflow from the other host and pass the preserved failed result; an exited model session cannot transfer control on its own.
+
 For an explicit model choice, add e.g. `--model gpt-6-astra --effort high` to a Codex call, or `--model claude-fable-5-1` to a Claude call. Omit these to use CLI configuration. Repeat explicit model/effort choices when resuming; the runner refuses mismatches. No global configuration is changed.
 
 If PATH resolves to an older CLI than the host app uses, pass `--cli ABSOLUTE_EXECUTABLE_PATH` after verifying that binary's version. Do not guess an app installation path or silently rewrite global PATH. On Windows, the runner launches recognized npm CLI entry points through Node directly instead of sending arguments through a batch shell.
@@ -42,7 +53,7 @@ The default timeout is 600 seconds. Use a host tool's nonblocking/background sup
 
 Validation rejects empty/malformed output, duplicate finding IDs, unsupported severity, material findings paired with APPROVED, missing coverage, and incomplete CLI turns. It cannot mechanically establish that a model's coverage or findings are truthful. Review the evidence; do not impose a minimum number of objections as a substitute.
 
-Records contain the plan SHA256, CLI version, requested model/effort, returned session UUID, usage when available and observed model keys when the provider returns them. Unknown model identity remains unknown. There is no silent model fallback or automatic provider switch.
+Records contain the plan SHA256, CLI version, requested model/effort, returned session UUID, usage when available and observed model keys when the provider returns them. Unknown model identity remains unknown. Normal reviews record `assurance=cross_provider`. A validated fallback records `assurance=degraded_same_provider`, the primary provider, failure kind, reason, source result path and whether the fallback session is fresh or resumed; the runner also appends a `DEGRADED_SAME_PROVIDER` limitation to the structured response. There is no silent model fallback or unrecorded provider switch.
 
 ## Compatibility
 

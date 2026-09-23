@@ -17,6 +17,22 @@ import uuid
 
 
 PROVIDERS = ("claude", "codex")
+UNAVAILABLE_MARKERS = (
+    "authentication failed", "login required", "not logged in", "unauthorized",
+    "quota", "rate limit", "usage limit", "hit your limit", "service unavailable",
+    "temporarily unavailable", "overloaded", "spend limit",
+)
+
+
+def unavailable_http_status(status) -> bool:
+    """Claude reports API failures as terminal_reason=api_error plus the HTTP status.
+
+    400/403 alone stay ineligible: they signal a request or configuration fault.
+    """
+    return (isinstance(status, int) and not isinstance(status, bool)
+            and (status in (401, 429) or 500 <= status <= 599))
+
+
 REVIEW_SCHEMA = {
     "type": "object", "additionalProperties": False,
     "properties": {
@@ -55,6 +71,97 @@ def resolve_roles(host: str, reviewer: str | None = None,
     builder = builder or host
     return {"host": host, "planner": host, "reviewer": reviewer,
             "builder": builder, "inspector": next(p for p in PROVIDERS if p != builder)}
+
+
+def provider_failure_diagnostic(provider: str, run_dir: Path) -> tuple[str, bool]:
+    """Return provider-owned error text and whether a structured status proves unavailability.
+
+    Model-authored fields (Claude ``result``, Codex ``agent_message``) are never read: a
+    response that merely mentions a quota must not authorize fallback.
+    """
+    parts, structured = [], False
+    stderr = run_dir / "stderr.txt"
+    if stderr.exists():
+        parts.append(stderr.read_text(encoding="utf-8", errors="replace"))
+    stdout = run_dir / "stdout.txt"
+    if not stdout.exists():
+        return "\n".join(parts), structured
+    try:
+        body = stdout.read_text(encoding="utf-8", errors="replace")
+        if provider == "codex":
+            events = [json.loads(line) for line in body.splitlines() if line.strip()]
+            failures = [event for event in events if isinstance(event, dict)
+                        and event.get("type") in ("error", "turn.failed")]
+            keys = ("error", "message")
+        else:
+            envelope = json.loads(body)
+            events = envelope if isinstance(envelope, list) else [envelope]
+            failures = [event for event in events if isinstance(event, dict)
+                        and event.get("type") == "result"
+                        and (event.get("is_error") or event.get("subtype") != "success")]
+            keys = ("error",)
+            structured = any(failure.get("terminal_reason") == "api_error"
+                             and unavailable_http_status(failure.get("api_error_status"))
+                             for failure in failures)
+        for failure in failures:
+            parts.append(json.dumps({key: failure.get(key) for key in keys}, ensure_ascii=False))
+    except (OSError, ValueError):
+        pass
+    return "\n".join(parts), structured
+
+
+def classify_failure(error: str, run_dir: Path, provider: str) -> tuple[str, bool]:
+    """Identify failures that justify an explicit same-provider fallback."""
+    lowered_error = error.lower()
+    unavailable = any(marker in lowered_error for marker in (
+        "not on path", "cli version probe failed", "timed out",
+    ))
+    # Read provider diagnostics only for an operational CLI failure. This avoids
+    # treating words such as "quota" inside malformed review content as evidence
+    # that the provider itself was unavailable.
+    operational = any(marker in lowered_error for marker in (
+        " exited ", "reported a failed turn", "did not finish successfully",
+    ))
+    if operational:
+        diagnostic, structured = provider_failure_diagnostic(provider, run_dir)
+        lowered = (error + "\n" + diagnostic).lower()
+        unavailable = (unavailable or structured
+                       or any(marker in lowered for marker in UNAVAILABLE_MARKERS))
+    return ("provider_unavailable", True) if unavailable else ("provider_failure", False)
+
+
+def validate_fallback(path: Path, repo: Path, plan: Path, provider: str,
+                      mode: str, roles: dict, base: str | None = None,
+                      resuming: bool = False) -> dict:
+    """Validate evidence for a fresh, degraded same-provider review."""
+    if mode not in ("review", "inspect"):
+        raise RunError("Same-provider fallback is available only for review and inspect modes.")
+    record = json.loads(path.resolve(strict=True).read_text(encoding="utf-8"))
+    if not isinstance(record, dict):
+        raise RunError("Fallback source must be a result object.")
+    expected_primary = roles["reviewer"] if mode == "review" else roles["inspector"]
+    expected_fallback = roles["host"] if mode == "review" else roles["builder"]
+    checks = {
+        "status": "failed", "mode": mode, "provider": expected_primary,
+        "repo": str(repo), "plan": str(plan),
+    }
+    for key, expected in checks.items():
+        if record.get(key) != expected:
+            raise RunError(f"Fallback source {key} does not match this run.")
+    if record.get("roles") != roles:
+        raise RunError("Fallback source roles do not match this run.")
+    if mode == "inspect":
+        if not base:
+            raise RunError("Inspection fallback requires --base.")
+        if record.get("snapshot") != snapshot(repo, base):
+            raise RunError("Code changed after the failed primary inspection; try the primary inspector again.")
+    if not resuming and record.get("plan_sha256") != digest(plan.read_bytes()):
+        raise RunError("Plan changed after the failed primary review; start the review again.")
+    if record.get("failure_kind") != "provider_unavailable" or not record.get("fallback_eligible"):
+        raise RunError("Primary failure is not eligible for automatic same-provider fallback.")
+    if provider != expected_fallback:
+        raise RunError(f"Fallback provider must be {expected_fallback} for this {mode} run.")
+    return record
 
 
 def cli_prefix(provider: str, override: str | None = None) -> list[str]:
@@ -193,7 +300,9 @@ def execute(argv: list[str], prompt: str, repo: Path, run_dir: Path, timeout: in
                 else:
                     os.killpg(proc.pid, signal.SIGKILL)
                 proc.wait()
-                raise RunError("Run timed out or was interrupted; no approval recorded.") from exc
+                message = ("Run timed out; no approval recorded." if isinstance(exc, subprocess.TimeoutExpired)
+                           else "Run was interrupted; no approval recorded.")
+                raise RunError(message) from exc
             return proc.returncode
 
 
@@ -276,21 +385,32 @@ def run(args) -> int:
     roles = resolve_roles(args.host, builder=args.builder)
     provider = args.provider or (roles["builder"] if args.mode == "build" else
                                  roles["inspector"] if args.mode == "inspect" else roles["reviewer"])
-    if args.mode == "review" and provider == args.host:
+    fallback = (validate_fallback(Path(args.fallback_from), repo, plan, provider,
+                                  args.mode, roles, args.base, bool(args.resume))
+                if args.fallback_from else None)
+    if args.mode == "review" and provider == args.host and not fallback:
         raise RunError("Plan review must use the provider opposite the planner/host.")
-    if args.mode == "inspect" and provider == roles["builder"]:
+    if args.mode == "inspect" and provider == roles["builder"] and not fallback:
         raise RunError("Inspection must use the provider opposite the builder.")
+    if fallback and args.mode == "review" and args.resume:
+        previous_fallback = json.loads(Path(args.resume).read_text(encoding="utf-8"))
+        if not isinstance(previous_fallback, dict):
+            raise RunError("Fallback resume source must be a result object.")
+        if previous_fallback.get("fallback_from") != str(Path(args.fallback_from).resolve()):
+            raise RunError("Fallback review resume must retain the original failed primary result.")
     if args.mode == "check":
         if not args.approval:
             raise RunError("check requires --approval result.json.")
-        check_approval(json.loads(Path(args.approval).read_text(encoding="utf-8")), plan, repo)
-        print("Approval matches the current plan.")
+        approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
+        check_approval(approval, plan, repo)
+        print(f"Approval matches the current plan; assurance={approval.get('assurance', 'legacy_unspecified')}.")
         return 0
     if args.mode == "inspect" and (not args.base or args.resume):
         raise RunError("Inspection requires --base and a fresh session (no --resume).")
     previous = (previous_record(Path(args.resume), repo, plan, provider, args.mode,
                                 args.model, args.effort) if args.resume else None)
     before = snapshot(repo, args.base) if args.mode == "inspect" else None
+    approval_assurance = None
     if args.mode == "build":
         if not previous and git(repo, "status", "--porcelain", "--untracked-files=all").strip():
             raise RunError("Build requires a clean checkout. Use an isolated worktree; preserve existing work.")
@@ -299,7 +419,9 @@ def run(args) -> int:
         if previous and (head != args.base or previous.get("snapshot") != snapshot(repo, args.base)):
             raise RunError("Checkout changed since the previous build. Inspect intervening work before continuing.")
         if args.approval:
-            check_approval(json.loads(Path(args.approval).read_text(encoding="utf-8")), plan, repo)
+            approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
+            check_approval(approval, plan, repo)
+            approval_assurance = approval.get("assurance", "legacy_unspecified")
         elif not args.unreviewed_spec:
             raise RunError("Supply --approval, or explicitly --unreviewed-spec for a standalone work order.")
         if not args.proof:
@@ -310,11 +432,22 @@ def run(args) -> int:
     root.mkdir(parents=True, exist_ok=True)
     run_dir = Path(tempfile.mkdtemp(prefix="claudex-", dir=root))
     plan_body = plan.read_bytes()
+    assurance = ("degraded_same_provider" if fallback else
+                 "cross_provider" if args.mode in ("review", "inspect") else None)
     record = {"status": "running", "mode": args.mode, "provider": provider, "roles": roles,
               "repo": str(repo), "plan": str(plan), "plan_sha256": digest(plan_body),
               "requested_model": args.model, "requested_effort": args.effort,
               "base": args.base, "snapshot": before, "previous": args.resume,
-              "started_at": time.time(), "artifacts": str(run_dir)}
+              "started_at": time.time(), "artifacts": str(run_dir),
+              "assurance": assurance, "approval_assurance": approval_assurance}
+    if fallback:
+        record.update(
+            fallback_from=str(Path(args.fallback_from).resolve()),
+            fallback_primary_provider=fallback["provider"],
+            fallback_failure_kind=fallback["failure_kind"],
+            fallback_reason=fallback.get("error"),
+            fallback_session_state="resumed" if previous else "fresh",
+        )
     save(run_dir / "result.json", record)
     save(run_dir / "schema.json", REVIEW_SCHEMA)
     instructions = (
@@ -336,6 +469,18 @@ def run(args) -> int:
         "Report files changed, proof output, denied/blocked actions, and deviations. "
         "Your report is advisory; another provider will independently review the final changes.\n"
     )
+    if fallback:
+        session_instruction = (
+            "You are resuming the same fallback reviewer session. " if previous else
+            "You are in a fresh fallback reviewer session. "
+        )
+        instructions = (
+            "DEGRADED SAME-PROVIDER FALLBACK: the preferred other-provider reviewer was "
+            "unavailable. " + session_instruction +
+            "You share the builder/planner provider. "
+            "Review adversarially and do not claim cross-provider independence. "
+            "The runner will preserve this limitation in the result.\n" + instructions
+        )
     prompt = instructions + f"\nPLAN PATH: {plan}\nPLAN SHA256: {record['plan_sha256']}\n"
     prompt += "<plan>\n" + plan_body.decode("utf-8-sig") + "\n</plan>\n"
     if previous:
@@ -366,6 +511,18 @@ def run(args) -> int:
             raise RunError(f"{provider} exited {code}; inspect stdout.txt and stderr.txt.")
         record.update(parse_result(provider, args.mode, run_dir,
                                    previous["session_id"] if previous else None))
+        if fallback:
+            session_description = (
+                "resumed its prior fallback reviewer session" if previous else
+                "reviewed in a fresh fallback session"
+            )
+            limitation = (
+                "DEGRADED_SAME_PROVIDER: preferred reviewer "
+                f"{fallback['provider']} was unavailable; {provider} {session_description} "
+                "without cross-provider independence."
+            )
+            if limitation not in record["response"]["limitations"]:
+                record["response"]["limitations"].append(limitation)
         if digest(plan.read_bytes()) != record["plan_sha256"]:
             raise RunError("Plan changed during the run; result cannot approve the current plan.")
         if before and snapshot(repo, args.base)["sha256"] != before["sha256"]:
@@ -376,7 +533,9 @@ def run(args) -> int:
             record["snapshot"] = snapshot(repo, args.base)
         record["status"] = "completed"
     except (RunError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
-        record.update(status="failed", error=str(exc))
+        failure_kind, eligible = classify_failure(str(exc), run_dir, provider)
+        record.update(status="failed", error=str(exc), failure_kind=failure_kind,
+                      fallback_eligible=eligible)
     record["elapsed_seconds"] = round(time.time() - record["started_at"], 2)
     save(run_dir / "result.json", record)
     print(json.dumps(record, ensure_ascii=False, indent=2))
@@ -390,6 +549,8 @@ def main(argv=None) -> int:
                         help="Actual host of the user conversation; do not infer from installed binaries.")
     parser.add_argument("--builder", choices=PROVIDERS)
     parser.add_argument("--provider", choices=PROVIDERS)
+    parser.add_argument("--fallback-from",
+                        help="Failed other-provider result.json authorizing a degraded fresh same-provider review.")
     parser.add_argument("--repo", default=".")
     parser.add_argument("--plan", default="PLAN.md")
     parser.add_argument("--model", help="Explicit model override; omitted means provider CLI default.")

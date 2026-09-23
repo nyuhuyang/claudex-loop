@@ -524,6 +524,10 @@ def agy_preflight(prefix: list[str], profile: Path, cwd: Path, allow: bool, role
     usage = agy_probe(prefix, ["-p", "/usage"], cwd, profile, timeout=30)
     if not usage or "authentication required" in usage.lower():
         raise RunError("agy profile is not logged in; complete the printed one-time login.")
+    # Live 2026-09-23: an exhausted weekly pool only surfaced as exit 3 minutes into a run.
+    quota = re.search(r"^Gemini Models\s+Weekly Limit Remaining\s+(\d+)%\s+(\S+)", usage, re.M)
+    if quota and int(quota.group(1)) == 0:
+        raise RunError(f"agy Gemini weekly quota is exhausted; it resets at {quota.group(2)}.")
     return version, validated
 
 
@@ -855,9 +859,10 @@ def panel_prompt(spec: dict, worker: dict, plan: Path, plan_body: str, provider:
             lines += ["PUBLIC CONTEXT:", spec["public_context"]]
     elif worker["kind"] == "web" and provider == "agy":
         lines.append(
-            "SOURCE RULES: use search_web to discover sources and read_url_content to read them. "
-            "source_type is \"web\". The locator is the exact URL passed to read_url_content; "
-            "the excerpt must appear in that tool result. Search summaries alone are not verified.")
+            "SOURCE RULES: use search_web to discover sources and read_url_content to fetch them. "
+            "read_url_content saves the page and returns its file path; read that file with view_file. "
+            "source_type is \"web\". The locator is the exact URL passed to read_url_content; the excerpt "
+            "must be copied from that saved page. Search summaries alone are not verified.")
         if spec.get("public_context"):
             lines += ["PUBLIC CONTEXT:", spec["public_context"]]
     elif worker["kind"] == "web":
@@ -1381,7 +1386,9 @@ def _agy_review_prompt() -> str:
         "You are an independent PLAN_BODY_ONLY reviewer. You have no tools or repository access. "
         "Review only the supplied plan body for concrete correctness, security, and missing steps. "
         "Limit coverage to sections of the supplied plan body. List repository evidence you could "
-        "not check under limitations. APPROVED means no material unresolved plan-body defects; "
+        "not check under limitations. For each finding give a unique id, severity (exactly high, medium "
+        "or low, lowercase), path (the plan section), evidence and fix. "
+        "APPROVED means no material unresolved plan-body defects; "
         "REVISE needs concrete findings; BLOCKED means required plan evidence is missing. "
         "Return only the requested structured review.\n"
     )
@@ -1401,6 +1408,10 @@ def _agy_review_parse(run_dir: Path, expected_session, model: str) -> dict:
     parsed = parse_agy_stream((run_dir / "stdout.txt").read_text(encoding="utf-8"),
                               (run_dir / "stderr.txt").read_text(encoding="utf-8"),
                               expected_session, model)
+    # Live agy returned "HIGH"; case is the only tolerated deviation, other values still fail.
+    for finding in parsed["response"].get("findings", []) if isinstance(parsed["response"], dict) else []:
+        if isinstance(finding, dict) and isinstance(finding.get("severity"), str):
+            finding["severity"] = finding["severity"].lower()
     parsed["response"] = validate_review(parsed["response"])
     parsed.pop("calls")
     parsed["response"]["limitations"].append(

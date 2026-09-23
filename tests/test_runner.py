@@ -147,7 +147,9 @@ if sys.argv[1:3] == ['plugin', 'list']:
     print('Plugin configured' if case == 'plugin' else 'No imported plugins.')
     sys.exit(0)
 if sys.argv[1:3] == ['-p', '/usage']:
-    print('Authentication required' if case == 'auth' else 'Gemini remaining quota: 100%')
+    print('Authentication required' if case == 'auth' else
+          'Gemini Models\tWeekly Limit Remaining\t' + ('0%' if case == 'quota' else '100%') +
+          '\t2026-09-30T11:59:45Z\nClaude and GPT models\tWeekly Limit Remaining\t100%\t2026-09-30T14:34:45Z')
     sys.exit(0)
 payload = json.loads(sys.stdin.readline())
 prompt = payload['message']['content']
@@ -1299,7 +1301,7 @@ class AgyTests(unittest.TestCase):
                     self.assertEqual(record["status"], "partial")
 
     def test_agy_preflight_failures_and_model_policy(self):
-        for case in ("mcp", "plugin", "auth", "version"):
+        for case in ("mcp", "plugin", "auth", "version", "quota"):
             with self.subTest(case=case):
                 code, record, _, error = self.panel(case)
                 self.assertEqual(code, 1)
@@ -1615,6 +1617,18 @@ class AgyTests(unittest.TestCase):
                 self.assertEqual(code, 1, (record, error))
                 self.assertEqual(record["status"], "failed")
                 self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+
+    def test_agy_review_severity_case_is_normalized_but_unknown_values_fail(self):
+        finding = {"id": "f1", "path": "Step 6", "evidence": "finish is not allowed", "fix": "allow it"}
+        for severity, expected in (("HIGH", 0), ("critical", 1)):
+            with self.subTest(severity=severity):
+                value = {"verdict": "REVISE", "summary": "Stale step.", "coverage": ["Step 6"],
+                         "limitations": [], "findings": [dict(finding, severity=severity)]}
+                self.script_live_shape("review", [], value)
+                code, record, _, error = self.call("review")
+                self.assertEqual(code, expected, (record, error))
+                if not expected:
+                    self.assertEqual(record["response"]["findings"][0]["severity"], "high")
 
     def test_review_uses_the_offline_review_profile(self):
         code, record, _, error = self.call("review")

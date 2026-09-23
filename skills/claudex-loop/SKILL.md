@@ -28,8 +28,8 @@ If the user supplies `codex_cli` or `claude_cli`, map the selected provider's ex
 
 | Argument | Default | Meaning |
 |---|---|---|
-| `PLAN_FILE` / `plan` | `docs/plans/<date>-<slug>.md` | Plan path used throughout, including the build handoff. Resolve the plan/log pair once per run. When the path is generated from this default and already exists, add a numeric suffix rather than overwriting; an explicitly supplied path is used as given, including an existing one for `mode=review` |
-| `LOG_FILE` / `log` | `docs/plans/<date>-<slug>-review-log.md` | Append-only transcript, kept beside its plan |
+| `PLAN_FILE` / `plan` | `docs/exec-plans/active/<date>-<slug>.md` | Plan path used throughout, including the build handoff. Resolve the plan/log pair once per run. When the path is generated from this default and already exists, add a numeric suffix rather than overwriting; an explicitly supplied path is used as given, including an existing one for `mode=review` |
+| `LOG_FILE` / `log` | `docs/exec-plans/active/<date>-<slug>-review-log.md` | Append-only transcript, kept beside its plan. When the work is finished, move both to `docs/exec-plans/completed/` |
 | `rounds` / `MAX_ROUNDS` | `5` | Maximum completed plan-review rounds |
 | `builder` | host | Provider implementing the plan |
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |

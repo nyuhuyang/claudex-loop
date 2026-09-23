@@ -8,7 +8,7 @@ This repository distributes skills for coordinating Claude Code and Codex.
 - `skills/claudex-route/`: independent routing skill; `skills/codex-review/` and `skills/codex-build/`: compatibility commands using the shared workflow.
 - `tests/test_runner.py`: runner contract tests; `scripts/validate.py`: metadata, link, and manifest validation.
 - `.claude-plugin/` and `.codex-plugin/`: distribution manifests; `assets/`: README SVGs; `legacy/`: historical skills and notices.
-- `docs/plans/`: dated plans and review logs. See `README.md` for usage and `VALIDATION.md` for live evidence.
+- `docs/exec-plans/active/` and `docs/exec-plans/completed/`: dated plans with their review logs, moved to `completed/` when finished. See `README.md` for usage and `VALIDATION.md` for live evidence.
 
 ## Build, Test, and Development Commands
 

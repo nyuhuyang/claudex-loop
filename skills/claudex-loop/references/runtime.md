@@ -47,6 +47,30 @@ python RUNNER check --host codex --repo PROJECT --plan docs/implementation.md --
 
 The default timeout is 600 seconds. Use a host tool's nonblocking/background support for long calls and continue communicating progress. Set `--timeout SECONDS` for a justified larger build. Timeout kills the process tree and records failure. Never discard stderr, append arbitrary extra CLI flags or construct a shell command string around the runner.
 
+## Research panel
+
+`panel` runs fresh Claude workers for a Codex host (Codex workers are not yet supported). The host writes a spec, dry-runs it, shows the output to the user, then launches with the digest the user approved:
+
+```text
+python RUNNER panel --host codex --repo PROJECT --plan PLAN_PATH --spec panel.json --dry-run
+python RUNNER panel --host codex --repo PROJECT --plan PLAN_PATH --spec panel.json --payload-sha256 DIGEST
+```
+
+```json
+{"questions": [{"id": "q1", "text": "What breaks when ...?"}],
+ "workers": [{"id": "docs", "kind": "web", "angle": "official docs", "question_ids": ["q1"]},
+             {"id": "issues", "kind": "web", "angle": "issue trackers", "question_ids": ["q1"]},
+             {"id": "code", "kind": "repo", "angle": "current code", "question_ids": ["q1"]}],
+ "concurrency": 2, "wall_clock_seconds": 900, "public_context": "optional, web workers only"}
+```
+
+Every question needs two or more workers on distinct angles; at most 8 workers, concurrency 1-4, wall clock 60-3600 seconds. There are no retries inside a run. Any change to the spec, plan, or effective model/effort changes the digest, so the launch is refused until it is dry-run and approved again.
+
+- **Isolation:** every worker runs `claude -p --restricted --safe-mode` with no MCP, `dontAsk`, and `stream-json`. `--restricted` confines file tools to the working directory and ignores user/project settings. Web workers get only `WebSearch,WebFetch`, run in an empty directory under the run artifacts, and never receive the plan, repository path or repository content. Repo workers get only `Read,Glob,Grep` in the repository. The runner refuses to launch if the CLI lacks `--restricted`, and refuses repo workers on a CLI version without a recorded read-confinement canary unless `--allow-unvalidated-cli` is passed (recorded in the result). A denied outside read is recorded as `read_confinement_attempts`; an outside read that succeeded fails the run and writes no `panel.json`. Detection cannot undo disclosure to the provider. Tool calls are audited even when a worker crashes or is killed.
+- **Citations:** checked locally against each worker's own harness-recorded tool results; the runner makes no network requests. `retrieved`: the excerpt is in the successful (2xx) WebFetch result for that URL, or in the worker's Read of that file or its content-mode Grep lines for that file. `unverified`: the source was seen (search results only, a files-only Grep, or the excerpt was not found). `mismatch`: the worker never retrieved that source; the claim is dropped and the worker flagged. WebFetch returns content processed by a model under the worker's own fetch prompt, so `retrieved` means "the tool returned it", not a byte match.
+- **Outcome:** `completed` (assurance `cross_provider_panel`) only when every worker returned a valid response and every question has retrieved claims from two or more distinct angles. `partial` still writes `panel.json` with failed workers and under-covered questions listed. `failed` (confinement violation, wall clock, interruption) writes none. The exit code is 0 only for `completed`. On a wall-clock stop or interrupt, POSIX kills each live worker's whole process group; Windows `taskkill /T` covers descendants only while the worker process is alive. A descendant left behind by a worker that already exited is not tracked on either platform; restricted workers have no code-running tools.
+- **Output:** `panel.json` holds only schema-validated, length-bounded fields and is marked `untrusted_content`. Raw tool results stay in each worker's owner-only artifact directory. `result.json` is the manifest: spec, plan and payload digests, CLI version, and per worker the angle, session, observed model, usage, claim status counts and confinement findings.
+
 ## Structured review
 
 `verdict`: APPROVED / REVISE / BLOCKED; `summary`; `findings`: id, severity (high/medium/low), path, evidence, fix; `coverage`: files/requirements actually inspected; `limitations`: missing evidence or unreviewed areas.

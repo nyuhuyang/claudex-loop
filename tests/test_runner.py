@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -25,7 +26,27 @@ import json, os, pathlib, sys, time
 if '--version' in sys.argv:
     print('fake-cli 1.0')
     sys.exit(0)
+if '--help' in sys.argv:
+    print('' if os.environ.get('FAKE_NO_RESTRICTED') else '  --restricted  Restricted mode')
+    sys.exit(0)
 prompt = sys.stdin.read()
+if '--verbose' in sys.argv and os.environ.get('FAKE_PANEL_DIR'):
+    # Panel worker: record what it received, optionally stay alive, then replay its script.
+    import re
+    worker = re.search(r'^WORKER ID: (\S+)$', prompt, re.M).group(1)
+    d = pathlib.Path(os.environ['FAKE_PANEL_DIR'])
+    (d / (worker + '.argv.json')).write_text(json.dumps(sys.argv))
+    (d / (worker + '.stdin.txt')).write_text(prompt, encoding='utf-8')
+    (d / (worker + '.cwd.txt')).write_text(os.getcwd())
+    if (d / (worker + '.sleep')).exists():
+        end = time.time() + float((d / (worker + '.sleep')).read_text())
+        while time.time() < end:
+            (d / (worker + '.beat')).write_text(str(time.time()))
+            time.sleep(0.05)
+    script = d / (worker + '.jsonl')
+    sys.stdout.write(script.read_text() if script.exists() else '')
+    code = d / (worker + '.exit')
+    sys.exit(int(code.read_text()) if code.exists() else 0)
 case = os.environ.get('FAKE_CASE', 'ok')
 if case == 'timeout':
     time.sleep(30)
@@ -447,6 +468,376 @@ class RunnerTests(unittest.TestCase):
         code, _, _, error = self.invoke(extra=("--artifacts", str(self.repo / "runs")))
         self.assertEqual(code, 1)
         self.assertIn("outside", error)
+
+
+def stream(session, calls, response, model="claude-test"):
+    """Claude stream-json in the shape observed from Claude Code 2.1.280."""
+    events = [{"type": "system", "subtype": "init", "model": model}]
+    for index, (name, tool_input, ok, text, structured) in enumerate(calls):
+        tool_id = f"toolu_{index}"
+        events.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}})
+        result = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": tool_id, "content": text,
+             "is_error": None if ok else True}]}}
+        if structured is not None:
+            result["tool_use_result"] = structured
+        events.append(result)
+    events.append({"type": "result", "subtype": "success", "is_error": False, "session_id": session,
+                   "structured_output": response, "modelUsage": {model: {}}, "usage": {"input_tokens": 1}})
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+def fetch(url, body, ok=True):
+    return ("WebFetch", {"url": url, "prompt": "quote it"}, ok, body, {"url": url, "code": 200, "result": body})
+
+
+def search(*urls):
+    return ("WebSearch", {"query": "q"}, True, "Links: " + json.dumps([{"url": u} for u in urls]), None)
+
+
+def read(path, content, ok=True):
+    return ("Read", {"file_path": str(path)}, ok, "1\t" + content,
+            {"type": "text", "file": {"filePath": str(path), "content": content}} if ok else None)
+
+
+def claim(locator, excerpt, kind="web", question="q1", claim_id="c1"):
+    return {"id": claim_id, "question_id": question, "claim": "A supported statement.", "source_type": kind,
+            "locator": locator, "excerpt": excerpt, "confidence": "high", "limitation": ""}
+
+
+def response(*claims):
+    return {"summary": "Researched the assigned question.", "claims": list(claims),
+            "coverage": ["assigned angle"], "limitations": []}
+
+
+class PanelTests(unittest.TestCase):
+    SESSIONS = {"w1": "11111111-1111-4111-8111-111111111111",
+                "w2": "22222222-2222-4222-8222-222222222222",
+                "w3": "33333333-3333-4333-8333-333333333333"}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="claudex-panel-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        (self.repo / "existing.py").write_text("original value\n")
+        self.plan = self.root / "plan.md"
+        self.plan.write_text("# Plan\nSECRET-PLAN-BODY keep the original.\n", encoding="utf-8")
+        self.artifacts = self.root / "runs"
+        self.fake = self.root / "fake-panel"
+        self.fake.mkdir()
+        self.cli = self.root / "fake_cli.py"
+        self.cli.write_text(FAKE_CLI)
+        self.spec = {"questions": [{"id": "q1", "text": "Is alpha stable?"}],
+                     "workers": [{"id": "w1", "kind": "web", "angle": "official docs", "question_ids": ["q1"]},
+                                 {"id": "w2", "kind": "web", "angle": "community", "question_ids": ["q1"]},
+                                 {"id": "w3", "kind": "repo", "angle": "code", "question_ids": ["q1"]}],
+                     "wall_clock_seconds": 60}
+        self.script("w1", [fetch("https://a.example/doc", "Alpha is stable since 2026.")],
+                    response(claim("https://a.example/doc/", "alpha is  STABLE")))
+        self.script("w2", [search("https://b.example/x"), fetch("https://b.example/y", "Beta says alpha works.")],
+                    response(claim("https://b.example/y", "alpha works")))
+        self.script("w3", [read(self.repo / "existing.py", "original value\n")],
+                    response(claim("existing.py:1", "original value", "repo")))
+
+    def script(self, worker, calls, value):
+        (self.fake / f"{worker}.jsonl").write_text(stream(self.SESSIONS[worker], calls, value))
+
+    def call(self, *args, validated=True, env=None):
+        output, error = io.StringIO(), io.StringIO()
+        variables = {"FAKE_PANEL_DIR": str(self.fake), **(env or {})}
+        with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.cli)]), \
+             patch.object(runner, "VALIDATED_READ_CONFINEMENT_CLI", ("fake-cli",) if validated else ()), \
+             patch.dict(os.environ, variables), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = runner.main(["panel", "--host", "codex", "--repo", str(self.repo), "--plan", str(self.plan),
+                                "--artifacts", str(self.artifacts), *args])
+        return code, output.getvalue(), error.getvalue()
+
+    def dry_run(self, spec=None):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(spec or self.spec))
+        code, out, error = self.call("--spec", str(path), "--dry-run")
+        return code, (json.loads(out) if code == 0 else None), error
+
+    def launch(self, spec=None, extra=(), **kwargs):
+        code, dry, error = self.dry_run(spec)
+        self.assertEqual(code, 0, error)
+        old = set(self.artifacts.glob("claudex-*/result.json")) if self.artifacts.exists() else set()
+        code, _, error = self.call("--spec", str(self.root / "panel.json"),
+                                   "--payload-sha256", dry["payload_sha256"], *extra, **kwargs)
+        new = set(self.artifacts.glob("claudex-*/result.json")) - old if self.artifacts.exists() else set()
+        self.assertLessEqual(len(new), 1)
+        record = json.loads(next(iter(new)).read_text()) if new else None
+        return code, record, dry, error
+
+    def test_dry_run_shows_exact_web_payload_without_repository_material(self):
+        code, dry, _ = self.dry_run()
+        self.assertEqual(code, 0)
+        self.assertEqual((dry["launches"], dry["concurrency"]), (3, 2))
+        self.assertEqual(set(dry["web_worker_prompts"]), {"w1", "w2"})
+        for prompt in dry["web_worker_prompts"].values():
+            self.assertNotIn("SECRET-PLAN-BODY", prompt)
+            self.assertNotIn(str(self.repo), prompt)
+        self.assertEqual(dry["repo_workers"][0]["id"], "w3")
+        self.assertFalse(self.artifacts.exists())
+
+    def test_launch_requires_matching_payload_digest(self):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(self.spec))
+        for extra in ((), ("--payload-sha256", "0" * 64)):
+            code, _, error = self.call("--spec", str(path), *extra)
+            self.assertEqual(code, 1)
+            self.assertIn("payload-sha256", error)
+        _, dry, _ = self.dry_run()
+        self.plan.write_text("# Plan\nChanged after approval.\n", encoding="utf-8")
+        code, _, error = self.call("--spec", str(path), "--payload-sha256", dry["payload_sha256"])
+        self.assertEqual(code, 1)
+        self.assertIn("does not match", error)
+
+    def test_completed_panel_binds_workers_sessions_and_evidence(self):
+        code, record, dry, error = self.launch()
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(record["assurance"], "cross_provider_panel")
+        self.assertEqual({w["session_id"] for w in record["workers"]}, set(self.SESSIONS.values()))
+        self.assertEqual(len({w["artifacts"] for w in record["workers"]}), 3)
+        self.assertEqual(record["coverage"], {"q1": {"w1": 1, "w2": 1, "w3": 1}})
+        for worker in ("w1", "w2", "w3"):
+            argv = json.loads((self.fake / f"{worker}.argv.json").read_text())
+            self.assertIn("--restricted", argv)
+            self.assertNotIn("--resume", argv)
+            self.assertEqual(argv[argv.index("--tools") + 1],
+                             "Read,Glob,Grep" if worker == "w3" else "WebSearch,WebFetch")
+        for worker in ("w1", "w2"):
+            stdin = (self.fake / f"{worker}.stdin.txt").read_text(encoding="utf-8")
+            self.assertEqual(stdin, dry["web_worker_prompts"][worker])
+            cwd = Path((self.fake / f"{worker}.cwd.txt").read_text()).resolve()
+            self.assertTrue(cwd.is_relative_to(self.artifacts.resolve()))
+        self.assertEqual(Path((self.fake / "w3.cwd.txt").read_text()).resolve(), self.repo)
+        self.assertIn("SECRET-PLAN-BODY", (self.fake / "w3.stdin.txt").read_text(encoding="utf-8"))
+        panel = json.loads(Path(record["panel"]).read_text())
+        self.assertTrue(panel["untrusted_content"])
+        self.assertEqual({c["status"] for c in panel["claims"]}, {"retrieved"})
+        with self.assertRaises(runner.RunError):
+            runner.check_approval(record, self.plan, self.repo)
+
+    def test_web_citation_statuses(self):
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w1"], [
+            fetch("https://a.example/doc", "Alpha is stable."), fetch("https://c.example/", "Gamma text."),
+            search("https://s.example/only-searched"),
+            fetch("https://d.example/denied", "Hidden text.", ok=False)], response()))["calls"]
+        cases = [(claim("https://a.example/doc", "alpha is stable"), "retrieved"),
+                 (claim("https://a.example/doc", "not on the page"), "unverified"),
+                 (claim("https://s.example/only-searched", "anything"), "unverified"),
+                 (claim("https://a.example/doc", "gamma text"), "unverified"),
+                 (claim("https://never.example/", "alpha is stable"), "mismatch"),
+                 (claim("https://d.example/denied", "hidden text"), "mismatch")]
+        statuses = runner.verify_claims([c for c, _ in cases], calls, "web", self.repo)
+        self.assertEqual(statuses, [expected for _, expected in cases])
+
+    def test_repo_citation_statuses_use_what_the_worker_read(self):
+        (self.repo / "docs").mkdir()
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w3"], [
+            read(self.repo / "existing.py", "original value\n"),
+            ("Grep", {"pattern": "value"}, True, "docs/grepped.md:3:some value", None)], response()))["calls"]
+        (self.repo / "existing.py").write_text("edited after the worker read it\n")
+        cases = [(claim("existing.py:1", "original value", "repo"), "retrieved"),
+                 (claim("existing.py", "edited after", "repo"), "unverified"),
+                 (claim("docs/grepped.md:3", "some value", "repo"), "retrieved"),
+                 (claim("docs/grepped.md", "not in the grep line", "repo"), "unverified"),
+                 (claim("never_read.py", "original value", "repo"), "mismatch"),
+                 (claim("../outside.py", "original value", "repo"), "mismatch"),
+                 (claim(str(self.repo / "existing.py"), "original value", "repo"), "mismatch")]
+        statuses = runner.verify_claims([c for c, _ in cases], calls, "repo", self.repo)
+        self.assertEqual(statuses, [expected for _, expected in cases])
+
+    def test_outside_read_that_succeeds_fails_the_run_without_panel_output(self):
+        outside = self.root / "outside-secret.txt"
+        self.script("w3", [read(outside, "FAKE-SECRET")], response(claim("existing.py", "x", "repo")))
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertNotIn("assurance", record)
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+        self.assertNotIn("FAKE-SECRET", json.dumps(record))
+
+    def test_outside_read_counts_even_when_the_worker_then_crashes(self):
+        outside = self.root / "outside-secret.txt"
+        truncated = stream(self.SESSIONS["w3"], [read(outside, "FAKE-SECRET")], response())
+        (self.fake / "w3.jsonl").write_text(truncated.rsplit("\n", 2)[0] + '\n{"type": "res')
+        (self.fake / "w3.exit").write_text("1")
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(next(w for w in record["workers"] if w["id"] == "w3")["status"], "confinement_violation")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+
+    def test_launch_time_model_or_effort_change_invalidates_the_digest(self):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(self.spec))
+        code, out, _ = self.call("--spec", str(path), "--dry-run")
+        dry = json.loads(out)
+        self.assertEqual((dry["model"], dry["effort"]), ("CLI default (unresolved)", "CLI default"))
+        for extra in (("--model", "other-model"), ("--effort", "max")):
+            code, _, error = self.call("--spec", str(path), "--payload-sha256", dry["payload_sha256"], *extra)
+            self.assertEqual(code, 1)
+            self.assertIn("does not match", error)
+
+    def test_error_pages_and_unrelated_grep_hits_are_not_evidence(self):
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w1"], [
+            ("WebFetch", {"url": "https://e.example/"}, True, "Not Found: alpha is stable",
+             {"url": "https://e.example/", "code": 404, "result": "Not Found: alpha is stable"})], response()))["calls"]
+        self.assertEqual(runner.verify_claims([claim("https://e.example/", "alpha is stable")], calls, "web",
+                                              self.repo), ["unverified"])
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w3"], [
+            ("Grep", {"pattern": "x"}, True, "src/foobar.py:3:x = 1", None)], response()))["calls"]
+        claims = [claim("bar.py", "x = 1", "repo"), claim("src/foobar.py:3", "x = 1", "repo", claim_id="c2"),
+                  claim("src/foobar.py", "y = 2", "repo", claim_id="c3")]
+        self.assertEqual(runner.verify_claims(claims, calls, "repo", self.repo),
+                         ["mismatch", "retrieved", "unverified"])
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w3"], [
+            ("Grep", {"pattern": "x", "output_mode": "files_with_matches"}, True, "Found 2 files\nsrc/foobar.py\nmy-2-file.py",
+             None)], response()))["calls"]
+        claims = [claim("src/foobar.py", "x = 1", "repo"), claim("my-2-file.py", "x", "repo", claim_id="c2")]
+        self.assertEqual(runner.verify_claims(claims, calls, "repo", self.repo), ["unverified", "unverified"])
+
+    def test_denied_outside_read_is_recorded_but_not_fatal(self):
+        self.script("w3", [read(Path("/etc/hosts"), "", ok=False), read(self.repo / "existing.py", "original value\n")],
+                    response(claim("existing.py", "original value", "repo")))
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 0, record)
+        attempts = next(w for w in record["workers"] if w["id"] == "w3")["read_confinement_attempts"]
+        self.assertEqual(attempts, [{"tool": "Read", "target": "/etc/hosts", "succeeded": False}])
+
+    def test_invalid_worker_responses_fail_that_worker_and_make_the_panel_partial(self):
+        good = claim("https://b.example/y", "alpha works")
+        bad_responses = [
+            response(dict(good, excerpt="x" * 301)),
+            response(dict(good, extra="field")),
+            response(dict(good, question_id="q9")),
+            response(dict(good, source_type="repo")),
+            dict(response(good), summary="s" * 1001),
+            dict(response(good), claims=[dict(good, id=f"c{i}") for i in range(21)]),
+        ]
+        for value in bad_responses:
+            with self.subTest(value=str(value)[:80]):
+                self.script("w2", [fetch("https://b.example/y", "Beta says alpha works.")], value)
+                code, record, _, _ = self.launch()
+                self.assertEqual(code, 1)
+                self.assertEqual(record["status"], "partial")
+                self.assertEqual(record["failed_workers"], ["w2"])
+                self.assertNotIn("assurance", record)
+
+    def test_under_covered_question_is_partial(self):
+        self.script("w1", [fetch("https://a.example/doc", "Unrelated.")],
+                    response(claim("https://a.example/doc", "alpha is stable")))
+        (self.fake / "w3.exit").write_text("1")
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "partial")
+        self.assertEqual(record["under_covered"], ["q1"])
+        panel = json.loads(Path(record["panel"]).read_text())
+        self.assertEqual(panel["under_covered"], ["q1"])
+
+    def test_mismatch_claims_are_excluded_and_worker_flagged(self):
+        self.script("w2", [fetch("https://b.example/y", "Beta says alpha works.")],
+                    response(claim("https://b.example/y", "alpha works"),
+                             claim("https://invented.example/", "made up", claim_id="c2")))
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 0, record)
+        panel = json.loads(Path(record["panel"]).read_text())
+        self.assertEqual(panel["flagged_workers"], ["w2"])
+        self.assertNotIn("https://invented.example/", json.dumps(panel["claims"]))
+        self.assertTrue(all(c["worker_flagged"] for c in panel["claims"] if c["worker_id"] == "w2"))
+
+    def test_spec_errors_are_refused_before_launch(self):
+        worker = self.spec["workers"][0]
+        broken = {
+            "duplicate worker": dict(self.spec, workers=self.spec["workers"] + [worker]),
+            "unknown question": dict(self.spec, workers=[dict(worker, question_ids=["q9"])] + self.spec["workers"][1:]),
+            "one angle": dict(self.spec, workers=[dict(w, angle="same") for w in self.spec["workers"]]),
+            "concurrency": dict(self.spec, concurrency=5),
+            "wall clock": dict(self.spec, wall_clock_seconds=30),
+            "unknown field": dict(self.spec, retries=2),
+            "bad worker id": dict(self.spec, workers=[dict(worker, id="../w1")] + self.spec["workers"][1:]),
+        }
+        for name, spec in broken.items():
+            with self.subTest(name):
+                code, _, error = self.dry_run(spec)
+                self.assertEqual(code, 1)
+                self.assertTrue(error.strip())
+        self.assertFalse(self.artifacts.exists())
+
+    def test_cli_gates_restricted_mode_and_repo_canary(self):
+        code, record, _, error = self.launch(env={"FAKE_NO_RESTRICTED": "1"})
+        self.assertEqual(code, 1)
+        self.assertIn("--restricted", error)
+        code, _, _, error = self.launch(validated=False)
+        self.assertEqual(code, 1)
+        self.assertIn("canary", error)
+        code, record, _, _ = self.launch(extra=("--allow-unvalidated-cli",), validated=False)
+        self.assertEqual(code, 0, record)
+        self.assertTrue(record["allow_unvalidated_cli"])
+        self.assertFalse(record["read_confinement_validated"])
+        web_only = dict(self.spec, workers=self.spec["workers"][:2])
+        code, record, _, _ = self.launch(web_only, validated=False)
+        self.assertEqual(code, 0, record)
+
+    def test_panel_roles_are_cross_provider_and_claude_only(self):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(self.spec))
+        code, _, error = self.call("--spec", str(path), "--dry-run", "--provider", "codex")
+        self.assertEqual(code, 1)
+        self.assertIn("opposite", error)
+        output, error = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = runner.main(["panel", "--host", "claude", "--repo", str(self.repo), "--plan", str(self.plan),
+                                "--spec", str(path), "--dry-run"])
+        self.assertEqual(code, 1)
+        self.assertIn("not yet supported", error.getvalue())
+
+    def assert_no_live_workers(self, workers):
+        time.sleep(0.4)
+        beats = {w: (self.fake / f"{w}.beat").stat().st_mtime for w in workers if (self.fake / f"{w}.beat").exists()}
+        time.sleep(0.4)
+        for worker, mtime in beats.items():
+            self.assertEqual((self.fake / f"{worker}.beat").stat().st_mtime, mtime, f"{worker} still running")
+
+    def test_aggregate_deadline_kills_workers_and_cancels_queue(self):
+        for worker in self.SESSIONS:
+            (self.fake / f"{worker}.sleep").write_text("30")
+        started = time.monotonic()
+        with patch.dict(runner.PANEL_LIMITS, {"wall_min": 1}):
+            code, record, _, _ = self.launch(dict(self.spec, wall_clock_seconds=2))
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("wall-clock", record["error"])
+        self.assertFalse((self.fake / "w3.argv.json").exists())
+        self.assertEqual(next(w for w in record["workers"] if w["id"] == "w3")["status"], "cancelled")
+        self.assert_no_live_workers(["w1", "w2"])
+
+    def test_interrupt_in_coordinator_kills_every_worker(self):
+        for worker in self.SESSIONS:
+            (self.fake / f"{worker}.sleep").write_text("30")
+
+        def interrupt_after_launch(pending, timeout):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not all(
+                    (self.fake / f"{w}.beat").exists() for w in ("w1", "w2")):
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+        started = time.monotonic()
+        with patch.object(runner, "wait_workers", side_effect=interrupt_after_launch):
+            code, record, _, _ = self.launch()
+        self.assertLess(time.monotonic() - started, 20, "workers were not killed; shutdown waited for them")
+        self.assertEqual(code, 1)
+        self.assertEqual(record["error"], "Panel was interrupted.")
+        self.assert_no_live_workers(["w1", "w2", "w3"])
 
 
 if __name__ == "__main__":

@@ -131,6 +131,10 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 | `fallback` | `same-provider-on-unavailable` | Fresh same-provider review after a recorded provider-unavailable failure; `off` disables it |
 | `PROOF_CMD` | from plan/repo | Agreed command that verifies the deliverable |
 
+## Research panel
+
+From a Codex host, `panel` mode fans research out to fresh, read-only Claude workers: web workers that never see the repository, and repo workers confined to it by Claude's `--restricted` mode. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
+
 ## What an approval means
 
 The runner validates a successful CLI turn and a structured review; an empty output file or a session-start event cannot count as approval. The approval records the plan's path and SHA256. Changing the plan invalidates it. Inspections also record the pre-build commit and a fingerprint of the inspected changes, including staged and untracked files. Later code changes need another inspection.

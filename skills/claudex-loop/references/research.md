@@ -91,6 +91,10 @@ does not license hard-coding a model for research agents — the skill forbids t
 - Name any question that ends with fewer than two covering agents in the brief. Silent partial
   coverage reads as completed coverage.
 
+## When the runner panel executes the fan-out
+
+The runner's `panel` mode (see the runtime reference) enforces part of this: launch count, concurrency and wall clock are hard limits, the launch is bound to the dry-run the user approved, and a question with fewer than two distinct angles is refused before launch and reported as under-covered after it. Token bands stay advisory. The panel has no retry allowance; a retry is a new, separately approved run.
+
 ## What extraction can and cannot promise
 
 Ask readers for a verbatim quote and a locator alongside each claim, plus what they reviewed and

@@ -5,6 +5,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -1167,6 +1168,15 @@ class PanelTests(unittest.TestCase):
         self.assertIn("live web-panel validation", error)
 
 
+class AgyWindowsTests(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows-only refusal")
+    def test_agy_is_refused_on_windows(self):
+        for call in (lambda: runner.agy_profile("web"), runner.create_agy_profile):
+            with self.assertRaisesRegex(runner.RunError, "refused on Windows"):
+                call()
+
+
+@unittest.skipIf(os.name == "nt", "agy is refused on Windows until its permission system is validated there")
 class AgyTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="claudex-agy-")
@@ -1366,6 +1376,7 @@ class AgyTests(unittest.TestCase):
         for path in (config / "hooks.json", config / "skills" / "x", cli_root / "plugins" / "x",
                      self.profile / "AGENTS.md"):
             with self.subTest(path=path):
+                created = not path.parent.exists()
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("customization", encoding="utf-8")
                 code, record, _, error = self.panel()
@@ -1373,6 +1384,8 @@ class AgyTests(unittest.TestCase):
                 self.assertIsNone(record)
                 self.assertIn("agy", error)
                 path.unlink()
+                if created:  # a leftover skills/ or plugins/ dir would mask the next check
+                    shutil.rmtree(path.parent)
         mcp.write_text('{"mcpServers":{"unsafe":{}}}', encoding="utf-8")
         code, record, _, error = self.panel()
         self.assertEqual(code, 1)

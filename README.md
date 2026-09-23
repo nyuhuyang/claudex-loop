@@ -25,9 +25,9 @@ Claudex Loop gives a plan an independent review before implementation, then give
 | **Claude Code** | Current Claude session | Codex | Claude | Fresh Codex session |
 | **Codex** | Current Codex session | Claude | Codex | Fresh Claude session |
 
-Choose either builder with `builder=claude` or `builder=codex`. The inspector follows the builder choice and always uses the other provider. If the coordinator takes over fixes, those new edits need another independent inspection. With mixed authorship, the log records who wrote and reviewed each part.
+Choose either builder with `builder=claude` or `builder=codex`. The inspector follows the builder choice and first uses the other provider. If that provider is unavailable because of quota, authentication, a missing CLI, service failure or timeout, the loop automatically starts a fresh same-provider reviewer and labels the result `degraded_same_provider`. If the coordinator takes over fixes, those new edits need another independent inspection. With mixed authorship, the log records who wrote and reviewed each part.
 
-Model choices remain configurable. Use **Claude Fable 5.1** and **GPT-6 Astra** when selected and available on your accounts, or retain each CLI's configured model. The host UI selection does not automatically change the other CLI's configuration. Requested and observed model information is recorded separately, and there is no silent model/provider fallback.
+Model choices remain configurable. Use **Claude Fable 5.1** and **GPT-6 Astra** when selected and available on your accounts, or retain each CLI's configured model. The host UI selection does not automatically change the other CLI's configuration. Requested and observed model information is recorded separately. Fallback is never silent: both attempts, the trigger and the reduced assurance are recorded.
 
 ## Claudex Route: standalone task routing
 
@@ -128,13 +128,14 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 | `MAX_INSPECTION_ROUNDS` | `2` | Initial inspection plus one reinspection |
 | `research` | proportionate to task | `none`, `web`, or explicitly authorized `deep` |
 | `inspect` | `on` | `off` is an explicit, logged opt-out |
+| `fallback` | `same-provider-on-unavailable` | Fresh same-provider review after a recorded provider-unavailable failure; `off` disables it |
 | `PROOF_CMD` | from plan/repo | Agreed command that verifies the deliverable |
 
 ## What an approval means
 
 The runner validates a successful CLI turn and a structured review; an empty output file or a session-start event cannot count as approval. The approval records the plan's path and SHA256. Changing the plan invalidates it. Inspections also record the pre-build commit and a fingerprint of the inspected changes, including staged and untracked files. Later code changes need another inspection.
 
-A clean structured result does not prove the model is right. The log preserves coverage, limitations and concrete evidence. Zero findings is valid; a large number of findings is not a quality score. `BLOCKED`, execution failures and exhausted round budgets are surfaced rather than converted to approval.
+A clean structured result does not prove the model is right. The log preserves coverage, limitations and concrete evidence. Zero findings is valid; a large number of findings is not a quality score. `BLOCKED`, ordinary execution failures and exhausted round budgets are surfaced rather than converted to approval. A quota/authentication/CLI/service/timeout failure may authorize a fresh same-provider fallback, but its approval remains visibly weaker than cross-provider approval.
 
 Codex reviews use the read-only shell sandbox. Claude reviews expose only file reading/search, with customizations disabled and no MCP tools. These boundaries differ: see [runtime details](skills/claudex-loop/references/runtime.md), especially existing Codex MCP configuration. Builders use bounded permissions, and delegated builds require a clean checkout. A worktree preserves unrelated work; it is not itself a security sandbox.
 

@@ -16,9 +16,9 @@ Identify the actual host from your runtime, not PATH, installed skills, model-na
 | Claude Code | Current Claude session | Codex | Claude | Fresh Codex session |
 | Codex | Current Codex session | Claude | Codex | Fresh Claude session |
 
-Honor `builder=claude|codex`. The inspector is always the other provider. The host remains coordinator even when the other provider builds. To swap the planner, start the conversation in the other host; do not pretend a CLI reviewer is the user's planning conversation.
+Honor `builder=claude|codex`. The inspector is the other provider, except for the recorded degraded fallback below. The host remains coordinator even when the other provider builds. To swap the planner, start the conversation in the other host; do not pretend a CLI reviewer is the user's planning conversation.
 
-Model selection is independent of provider roles. Preserve the host's selected model. Review/build CLI calls inherit their own configuration unless `reviewer_model`, `builder_model`, or `inspector_model` is supplied; map these to the runner's `--model` for that invocation. Apply an explicit `*_effort` similarly. Fable 5.1 and GPT-6 Astra are suitable explicit choices, not mandatory pins. A model in the host UI does not prove which model a separate CLI will use. Report requested and observed model information separately; report an unresolved CLI default honestly. Never silently fall back to another model/provider on a failure.
+Model selection is independent of provider roles. Preserve the host's selected model. Review/build CLI calls inherit their own configuration unless `reviewer_model`, `builder_model`, or `inspector_model` is supplied; map these to the runner's `--model` for that invocation. Apply an explicit `*_effort` similarly. Fable 5.1 and GPT-6 Astra are suitable explicit choices, not mandatory pins. A model in the host UI does not prove which model a separate CLI will use. Report requested and observed model information separately; report an unresolved CLI default honestly. Never silently change models or providers. The explicit degraded fallback below is allowed only after a recorded provider-unavailable failure.
 
 Read [the runtime reference](references/runtime.md) before launching a CLI. Resolve its runner relative to this installed SKILL.md, never relative to the project being reviewed. Use absolute paths when launching it.
 
@@ -35,10 +35,11 @@ If the user supplies `codex_cli` or `claude_cli`, map the selected provider's ex
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |
 | `mode` | `full` | `full` includes recon/interview; `review` starts from an existing plan |
 | `inspect` | `on` | `off` only when the user explicitly opts out; record it |
+| `fallback` | `same-provider-on-unavailable` | After a recorded quota/authentication/CLI/service/timeout failure, use a fresh same-provider reviewer and mark reduced assurance; `off` disables this |
 | `MAX_FIX_ROUNDS` | `2` | Bounded build-fix attempts before reporting or taking over |
 | `MAX_INSPECTION_ROUNDS` | `2` | Initial inspection plus one after fixes |
 
-Echo roles, paths, round limits, requested models and inspection opt-out before starting. Preserve existing authorization: a request to plan does not authorize building; a request to plan and implement does. Do authorized preparation before seeking any remaining sign-off.
+Echo roles, paths, round limits, requested models, fallback policy and inspection opt-out before starting. Preserve existing authorization: a request to plan does not authorize building; a request to plan and implement does. Do authorized preparation before seeking any remaining sign-off.
 
 ## Phase 0 — Recon
 
@@ -73,7 +74,10 @@ Each successful response contains a verdict, evidence-backed findings, actual co
 
 - **APPROVED:** no unresolved material defects. Approval is bound to the exact plan path and SHA256. Present remaining low-priority advice and limitations; zero findings is valid and is not proof of exhaustive correctness.
 - **REVISE:** the host arbitrates each finding. Implement warranted plan changes; reject unsupported suggestions with reasons. Record dispositions and send the revised plan to the same reviewer. Avoid relitigating resolved points without new evidence.
-- **BLOCKED / failed process / malformed result:** never count this as approval. Explain the actual missing evidence or operational failure. Do not burn remaining rounds on blind retries or switch providers silently.
+- **BLOCKED / malformed result / ordinary process failure:** never count this as approval. Explain the actual missing evidence or operational failure. Do not burn remaining rounds on blind retries.
+- **Provider unavailable:** when the failed result records `failure_kind=provider_unavailable` and `fallback_eligible=true`, and `fallback` is enabled, immediately start a fresh same-provider review using `--provider HOST --fallback-from FAILED_RESULT`. Do not ask again after echoing the policy. This is automatic but never silent: preserve the primary diagnostics, record `assurance=degraded_same_provider`, and retain the injected `DEGRADED_SAME_PROVIDER` limitation. Do not trigger fallback for `REVISE`, `BLOCKED`, malformed output, repository mutation, or user interruption. Use the fallback reviewer session for later plan revisions with both `--resume` and the original `--fallback-from`; do not return to the unavailable provider mid-loop.
+
+Automatic fallback requires a live coordinator. If the active host process itself exhausts quota and stops, it cannot launch another process; resume the workflow from the other host with the preserved failed result. A live Codex host can automatically replace an unavailable Claude reviewer with a fresh Codex CLI session.
 
 Stop at `MAX_ROUNDS`. Present unresolved findings and the host's position instead of manufacturing convergence. A changed plan requires another review. Before building, run the approval check on the final plan. If the user explicitly chooses to proceed without independent approval, record that override and use the standalone unreviewed-spec path; never label it approved.
 
@@ -83,8 +87,8 @@ Present the reviewed plan, improvements and remaining limits. If implementation 
 
 The host can implement directly with its normal tools. For a different builder, use the shared runner's `build` mode. Either path must capture the pre-build commit, preserve unrelated user work, and carry the same resolved plan and verification contract.
 
-Run the agreed proof checks, inspect all changed files and review the result through the other provider in a **fresh** `inspect` session. Supply the pre-build commit and builder identity. Reinspection after accepted fixes also uses a fresh session. Log findings and dispositions; rerun affected proof checks after fixes.
+Run the agreed proof checks, inspect all changed files and review the result through the other provider in a **fresh** `inspect` session. Supply the pre-build commit and builder identity. If that provider is unavailable and the failed result is fallback-eligible, automatically launch a fresh same-provider inspection with `--provider BUILDER --fallback-from FAILED_RESULT`. This is weaker assurance, not cross-provider inspection; surface it in the log and final result. Reinspection after accepted fixes also uses a fresh session. Log findings and dispositions; rerun affected proof checks after fixes.
 
 If the coordinator takes over coding, it has become a builder. Require a fresh other-provider inspection of its changes; never describe the earlier inspection as covering later edits. If both providers contributed code, record authorship and have each inspect the other's changes; do not claim any model independently reviewed code it authored. If the inspection budget is exhausted, report remaining findings and unreviewed edits explicitly for the user's decision.
 
-Present the final diff, proof results, inspection coverage, unresolved findings, deviations and rounds used. Honor existing commit/push authorization; otherwise leave the concrete diff ready for sign-off. External publication is never implied merely by running the loop.
+Present the final diff, proof results, inspection coverage, assurance (`cross_provider` or `degraded_same_provider`), fallback cause, unresolved findings, deviations and rounds used. Honor existing commit/push authorization; otherwise leave the concrete diff ready for sign-off. External publication is never implied merely by running the loop.

@@ -10,7 +10,7 @@ Development date: 2026-09-06. Tests run in disposable fixtures; production repos
 - Codex Plugin Creator validator: `.codex-plugin/plugin.json`.
 - `git diff --check`.
 
-The contract suite covers both host directions, explicit model selection, read-only reviewer argument construction, success/failure parsing, malformed/empty/incomplete output, a failed turn following successful output, session identity on resume, timeout handling, plan hash invalidation, staged/untracked/deleted change coverage, inspection invalidation and preservation of unrelated work during build resumption.
+The contract suite covers both host directions, explicit model selection, read-only reviewer argument construction, success/failure parsing, malformed/empty/incomplete output, a failed turn following successful output, session identity on resume, timeout handling, plan hash invalidation, staged/untracked/deleted change coverage, inspection invalidation and preservation of unrelated work during build resumption. It also verifies that quota/timeouts permit a fresh same-provider fallback, that the result records reduced assurance, and that non-availability failures cannot authorize fallback. Claude eligibility comes only from the structured `terminal_reason=api_error` plus `api_error_status` (401, 429, 5xx): a real spend-limit envelope is eligible, while the same text in the model-authored `result` field, a 400/403, or a malformed status is not.
 
 GitHub Actions is configured for Windows, macOS and Linux. Local results establish Windows behavior; cross-platform CI results must be checked on the PR before merge.
 

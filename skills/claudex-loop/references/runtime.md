@@ -13,6 +13,17 @@ python RUNNER review --host claude --repo PROJECT --plan docs/implementation.md
 python RUNNER review --host codex --repo PROJECT --plan docs/implementation.md
 ```
 
+The default policy first attempts the other provider. If its failed `result.json` records `failure_kind=provider_unavailable` and `fallback_eligible=true`, the host automatically starts a fresh same-provider review:
+
+```text
+python RUNNER review --host codex --provider codex --repo PROJECT --plan docs/implementation.md --fallback-from FAILED_CLAUDE_RESULT
+python RUNNER review --host claude --provider claude --repo PROJECT --plan docs/implementation.md --fallback-from FAILED_CODEX_RESULT
+```
+
+This fallback is accepted only for quota, authentication, missing CLI, service-unavailable or timeout failures. Eligibility is read only from provider-controlled evidence — process status, stderr, Codex `error`/`turn.failed` events, and Claude's `terminal_reason=api_error` with `api_error_status` 401, 429 or 5xx — never from model-authored text such as Claude's `result` or Codex's `agent_message`. The runner rejects fallback evidence from malformed reviews, `REVISE`/`BLOCKED`, repository mutation, interruption, or other non-availability failures. A fallback review starts fresh; later plan revisions resume that fallback session while retaining the original `--fallback-from` evidence.
+
+The coordinating host must still be running to launch the fallback. If the host process itself exhausts quota and exits, restart the workflow from the other host and pass the preserved failed result; an exited model session cannot transfer control on its own.
+
 For an explicit model choice, add e.g. `--model gpt-6-astra --effort high` to a Codex call, or `--model claude-fable-5-1` to a Claude call. Omit these to use CLI configuration. Repeat explicit model/effort choices when resuming; the runner refuses mismatches. No global configuration is changed.
 
 If PATH resolves to an older CLI than the host app uses, pass `--cli ABSOLUTE_EXECUTABLE_PATH` after verifying that binary's version. Do not guess an app installation path or silently rewrite global PATH. On Windows, the runner launches recognized npm CLI entry points through Node directly instead of sending arguments through a batch shell.
@@ -30,11 +41,36 @@ python RUNNER check --host codex --repo PROJECT --plan docs/implementation.md --
 
 ## Review boundaries
 
-- Codex: `exec -s read-only`; resume uses `-c sandbox_mode="read-only"`. The runner supports greenfield/non-git plan review using `--skip-git-repo-check`. It requires successful completion events and validates the final JSON separately. Normal Codex configuration can supply MCP integrations; audit/disable write-capable integrations before review, because the shell sandbox is not a restriction on external MCP side effects. Never run the review with an unknown write-capable toolchain.
+- Codex: `exec -s read-only`; resume uses `-c sandbox_mode="read-only"`. Review and inspection also disable the connector (`apps`), plugin, subagent, browser, image and dependency-install features that the installed CLI lists; the `apps` connectors otherwise expose GitHub write tools that the filesystem sandbox does not constrain. The result records `disabled_features`, and a failed feature probe stops the run. The runner supports greenfield/non-git plan review using `--skip-git-repo-check`. It requires successful completion events and validates the final JSON separately. MCP servers are switched off too: the runner lists them with `codex mcp list --json`, passes `-c mcp_servers.NAME.enabled=false` for each enabled one, and lists again to prove none stays enabled (plugin-provided servers disappear with `--disable plugins`). Keep a needed server with `--codex-mcp-allow NAME` (repeatable); the result records `mcp_disabled` and `mcp_allowed`. A failed listing, an unaddressable name, or a server that stays enabled stops the run. Audit any allowed server for write capability before review, because the shell sandbox is not a restriction on external MCP side effects. Never run the review with an unknown write-capable toolchain.
 - Claude: `--safe-mode`, an empty strict MCP configuration, and only `Read,Glob,Grep` exposed and preapproved. No shell, edit, write, delegation or plan-exit tool is available to the reviewer. `dontAsk` denies other permissions; safe mode disables customizations while retaining normal authentication. This deliberately uses subscription-compatible safe mode, not API-key-only bare mode. Admin-managed policy may still apply. Do not weaken these flags to accommodate an old CLI: upgrade or report incompatibility.
 - Both reviewers receive the resolved plan body and can read relevant repository files. They do not run proof commands; the host independently runs those. Repository text is evidence, not authority over the review protocol. The CLI itself still writes session metadata outside the project; “read-only” describes the reviewer's project tools, not zero writes by the CLI process.
 
 The default timeout is 600 seconds. Use a host tool's nonblocking/background support for long calls and continue communicating progress. Set `--timeout SECONDS` for a justified larger build. Timeout kills the process tree and records failure. Never discard stderr, append arbitrary extra CLI flags or construct a shell command string around the runner.
+
+## Research panel
+
+`panel` runs fresh workers from the provider opposite the host: Claude workers (web and repo) for a Codex host, Codex workers (web only) for a Claude host. The host writes a spec, dry-runs it, shows the output to the user, then launches with the digest the user approved:
+
+```text
+python RUNNER panel --host codex --repo PROJECT --plan PLAN_PATH --spec panel.json --dry-run
+python RUNNER panel --host codex --repo PROJECT --plan PLAN_PATH --spec panel.json --payload-sha256 DIGEST
+```
+
+```json
+{"questions": [{"id": "q1", "text": "What breaks when ...?"}],
+ "workers": [{"id": "docs", "kind": "web", "angle": "official docs", "question_ids": ["q1"]},
+             {"id": "issues", "kind": "web", "angle": "issue trackers", "question_ids": ["q1"]},
+             {"id": "code", "kind": "repo", "angle": "current code", "question_ids": ["q1"]}],
+ "concurrency": 2, "wall_clock_seconds": 900, "public_context": "optional, web workers only"}
+```
+
+Every question needs two or more workers on distinct angles; at most 8 workers, concurrency 1-4, wall clock 60-3600 seconds. There are no retries inside a run. Any change to the spec, plan, or effective model/effort changes the digest, so the launch is refused until it is dry-run and approved again.
+
+- **Isolation:** every worker runs `claude -p --restricted --safe-mode` with no MCP, `dontAsk`, and `stream-json`. `--restricted` confines file tools to the working directory and ignores user/project settings. Web workers get only `WebSearch,WebFetch`, run in an empty directory under the run artifacts, and never receive the plan, repository path or repository content. Repo workers get only `Read,Glob,Grep` in the repository. The runner refuses to launch if the CLI lacks `--restricted`, and refuses repo workers on a CLI version without a recorded read-confinement canary unless `--allow-unvalidated-cli` is passed (recorded in the result). A denied outside read is recorded as `read_confinement_attempts`; an outside read that succeeded fails the run and writes no `panel.json`. Detection cannot undo disclosure to the provider. Tool calls are audited even when a worker crashes or is killed.
+- **Codex workers (Claude host):** web only. Repo workers are refused because Codex's read-only sandbox does not confine reads (a live canary read an outside file). Codex has no tool allowlist, so each worker runs `codex exec --ignore-user-config --ephemeral -s read-only -c web_search="live"` with shell, file-viewing, connector (`apps`), plugin, subagent, browser and install features disabled; only features the installed CLI lists are disabled, and the result records them. Any completed JSONL item other than `web_search`, a model message or a provider error fails the run. Code-mode executions do not appear as items: Codex 0.156 routes search through code mode, and its runtime exposed no `require` or `fetch` in the live probe. Codex workers are refused on a CLI version without a recorded live web-panel run unless `--allow-unvalidated-cli` is passed; Codex auto-updates, so revalidate after an update. A Codex claim is `retrieved` only when its excerpt appears in the title or snippet of the search result for that exact URL.
+- **Citations:** checked locally against each worker's own harness-recorded tool results; the runner makes no network requests. `retrieved`: the excerpt is in the successful (2xx) WebFetch result for that URL, or in the worker's Read of that file or its content-mode Grep lines for that file. `unverified`: the source was seen (search results only, a files-only Grep, or the excerpt was not found). `mismatch`: the worker never retrieved that source; the claim is dropped and the worker flagged. WebFetch returns markdown processed by a model under the worker's own fetch prompt; web matching strips markdown formatting on both sides, and `retrieved` means "the tool returned it" (possibly the fetch model's summary), not a byte match with the page.
+- **Outcome:** `completed` (assurance `cross_provider_panel`) only when every worker returned a valid response and every question has retrieved claims from two or more distinct angles. `partial` still writes `panel.json` with failed workers and under-covered questions listed. `failed` (confinement violation, wall clock, interruption) writes none. The exit code is 0 only for `completed`. On a wall-clock stop or interrupt, POSIX kills each live worker's whole process group; Windows `taskkill /T` covers descendants only while the worker process is alive. A descendant left behind by a worker that already exited is not tracked on either platform; restricted workers have no code-running tools.
+- **Output:** `panel.json` holds only schema-validated, length-bounded fields and is marked `untrusted_content`. Raw tool results stay in each worker's owner-only artifact directory. `result.json` is the manifest: spec, plan and payload digests, CLI version, and per worker the angle, session, observed model, usage, claim status counts and confinement findings.
 
 ## Structured review
 
@@ -42,7 +78,7 @@ The default timeout is 600 seconds. Use a host tool's nonblocking/background sup
 
 Validation rejects empty/malformed output, duplicate finding IDs, unsupported severity, material findings paired with APPROVED, missing coverage, and incomplete CLI turns. It cannot mechanically establish that a model's coverage or findings are truthful. Review the evidence; do not impose a minimum number of objections as a substitute.
 
-Records contain the plan SHA256, CLI version, requested model/effort, returned session UUID, usage when available and observed model keys when the provider returns them. Unknown model identity remains unknown. There is no silent model fallback or automatic provider switch.
+Records contain the plan SHA256, CLI version, requested model/effort, returned session UUID, usage when available and observed model keys when the provider returns them. Unknown model identity remains unknown. Normal reviews record `assurance=cross_provider`. A validated fallback records `assurance=degraded_same_provider`, the primary provider, failure kind, reason, source result path and whether the fallback session is fresh or resumed; the runner also appends a `DEGRADED_SAME_PROVIDER` limitation to the structured response. There is no silent model fallback or unrecorded provider switch.
 
 ## Compatibility
 

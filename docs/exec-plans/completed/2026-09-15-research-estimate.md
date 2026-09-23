@@ -1,3 +1,9 @@
+---
+status: completed
+created: 2026-09-15
+completed: 2026-09-15
+---
+
 # Plan: pre-flight research estimate + dated plan/log defaults
 
 ## Goal

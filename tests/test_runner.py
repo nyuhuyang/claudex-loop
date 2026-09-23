@@ -9,6 +9,8 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -25,15 +27,69 @@ import json, os, pathlib, sys, time
 if '--version' in sys.argv:
     print('fake-cli 1.0')
     sys.exit(0)
+if '--help' in sys.argv:
+    print('' if os.environ.get('FAKE_NO_RESTRICTED') else '  --restricted  Restricted mode')
+    sys.exit(0)
+if sys.argv[1:3] == ['mcp', 'list']:
+    if os.environ.get('FAKE_MCP_FAIL'):
+        sys.exit(2)
+    off = {a.split('.')[1] for a in sys.argv if a.startswith('mcp_servers.') and a.endswith('.enabled=false')}
+    sticky = os.environ.get('FAKE_MCP_STICKY', '')
+    servers = [('playwright', True), ('tradingview-desktop', True), ('disabled_one', False)]
+    servers += [(sticky, True)] if sticky else []
+    print(json.dumps([{'name': n, 'enabled': e and (n == sticky or n not in off)} for n, e in servers]))
+    sys.exit(0)
+if sys.argv[1:3] == ['features', 'list']:
+    if os.environ.get('FAKE_FEATURES_FAIL'):
+        sys.exit(2)
+    if os.environ.get('FAKE_FEATURES_EMPTY'):
+        sys.exit(0)
+    rows = ['apps  stable  true', 'plugins  stable  true', 'shell_tool  stable  true',
+            'view_image  stable  true', 'search_tool  removed  false']
+    print('\n'.join(r for r in rows if r.split()[0] != os.environ.get('FAKE_FEATURES_DROP')))
+    sys.exit(0)
 prompt = sys.stdin.read()
+if ('--verbose' in sys.argv or '--ignore-user-config' in sys.argv) and os.environ.get('FAKE_PANEL_DIR'):
+    # Panel worker: record what it received, optionally stay alive, then replay its script.
+    import re
+    worker = re.search(r'^WORKER ID: (\S+)$', prompt, re.M).group(1)
+    d = pathlib.Path(os.environ['FAKE_PANEL_DIR'])
+    (d / (worker + '.argv.json')).write_text(json.dumps(sys.argv))
+    (d / (worker + '.stdin.txt')).write_text(prompt, encoding='utf-8')
+    (d / (worker + '.cwd.txt')).write_text(os.getcwd())
+    if (d / (worker + '.sleep')).exists():
+        end = time.time() + float((d / (worker + '.sleep')).read_text())
+        while time.time() < end:
+            (d / (worker + '.beat')).write_text(str(time.time()))
+            time.sleep(0.05)
+    script = d / (worker + '.jsonl')
+    sys.stdout.write(script.read_text() if script.exists() else '')
+    code = d / (worker + '.exit')
+    sys.exit(int(code.read_text()) if code.exists() else 0)
 case = os.environ.get('FAKE_CASE', 'ok')
 if case == 'timeout':
     time.sleep(30)
 if case == 'exit':
     print('Authentication failed', file=sys.stderr)
     sys.exit(7)
+if case == 'quota':
+    print('Usage limit reached; quota exhausted', file=sys.stderr)
+    sys.exit(7)
 if case == 'empty':
     sys.exit(0)
+if case in ('claude_429', 'claude_result_spoof', 'claude_400'):
+    # Shape of a real Claude Code 2.1.277 spend-limit response: the reason text sits in
+    # the model-authored `result` field; only api_error_status/terminal_reason are structured.
+    value = {'type':'result','subtype':'success','is_error':True,'num_turns':1,
+             'session_id':'12345678-1234-4567-8123-123456789abc',
+             'result':"You've hit your individual spend limit",
+             'terminal_reason':'api_error','api_error_status':429}
+    if case == 'claude_result_spoof':
+        del value['terminal_reason'], value['api_error_status']
+    if case == 'claude_400':
+        value['api_error_status'] = 400
+    print(json.dumps(value))
+    sys.exit(1)
 if case == 'mutate_plan':
     pathlib.Path(os.environ['FAKE_PLAN']).write_text('Changed after launch')
 if case == 'mutate_code':
@@ -126,6 +182,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertEqual(record["plan_sha256"], runner.digest(self.plan.read_bytes()))
                 self.assertIn(str(self.plan), (path.parent / "prompt.txt").read_text())
                 self.assertEqual(record["response"]["verdict"], "APPROVED")
+                self.assertEqual(record["assurance"], "cross_provider")
 
     def test_unpinned_and_explicit_model_selection(self):
         for provider in runner.PROVIDERS:
@@ -141,6 +198,46 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("--safe-mode", args)
         self.assertIn("--strict-mcp-config", args)
         self.assertEqual(args[args.index("--permission-mode")+1], "dontAsk")
+
+    def test_codex_readonly_runs_disable_connector_features_that_exist(self):
+        code, record, path, _ = self.invoke("claude")
+        self.assertEqual(code, 0, record)
+        argv = json.loads((path.parent / "command.json").read_text())
+        disabled = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"]
+        self.assertEqual(disabled, ["apps", "plugins"])
+        self.assertEqual(record["disabled_features"], ["apps", "plugins"])
+        self.assertEqual(record["mcp_disabled"], ["playwright", "tradingview-desktop"])
+        overrides = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-c" and argv[i + 1].startswith("mcp_servers.")]
+        self.assertEqual(overrides, ["mcp_servers.playwright.enabled=false",
+                                     "mcp_servers.tradingview-desktop.enabled=false"])
+        with patch.dict(os.environ, {"FAKE_FEATURES_EMPTY": "1"}):
+            code, record, _, _ = self.invoke("claude")
+        self.assertEqual(code, 1)
+        self.assertIn("no recognizable features", record["error"])
+        with patch.dict(os.environ, {"FAKE_FEATURES_DROP": "apps"}):
+            code, record, _, _ = self.invoke("claude")
+        self.assertEqual(code, 1)
+        self.assertIn("apps", record["error"])
+        code, record, path, _ = self.invoke("claude", mode="build", case="build",
+                                            extra=("--builder", "codex", "--unreviewed-spec", "--proof", "true"))
+        self.assertNotIn("--disable", json.loads((path.parent / "command.json").read_text()))
+        with patch.dict(os.environ, {"FAKE_FEATURES_FAIL": "1"}):
+            code, record, _, _ = self.invoke("claude")
+        self.assertEqual(code, 1)
+        self.assertIn("feature probe failed", record["error"])
+
+    def test_codex_mcp_servers_are_off_unless_allowed_and_proven_off(self):
+        code, record, path, _ = self.invoke("claude", extra=("--codex-mcp-allow", "playwright"))
+        self.assertEqual(code, 0, record)
+        self.assertEqual((record["mcp_disabled"], record["mcp_allowed"]), (["tradingview-desktop"], ["playwright"]))
+        self.assertNotIn("mcp_servers.playwright.enabled=false", json.loads((path.parent / "command.json").read_text()))
+        for env, message in (({"FAKE_MCP_STICKY": "cua_repl"}, "stay enabled"),
+                             ({"FAKE_MCP_FAIL": "1"}, "MCP listing failed"),
+                             ({"FAKE_MCP_STICKY": "bad.name"}, "Cannot address")):
+            with self.subTest(env=env), patch.dict(os.environ, env):
+                code, record, _, _ = self.invoke("claude")
+                self.assertEqual(code, 1)
+                self.assertIn(message, record["error"])
 
     def test_codex_resume_keeps_read_only_and_explicit_session(self):
         args = runner.command("codex", "review", self.root, session=SESSION)
@@ -224,6 +321,150 @@ class RunnerTests(unittest.TestCase):
         code, record, _, _ = self.invoke(case="timeout", extra=("--timeout", "1"))
         self.assertEqual(code, 1)
         self.assertIn("timed out", record["error"])
+        self.assertEqual(record["failure_kind"], "provider_unavailable")
+        self.assertTrue(record["fallback_eligible"])
+
+    def test_quota_failure_allows_honest_fresh_same_provider_review(self):
+        code, failed, primary, _ = self.invoke("codex", case="quota")
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["provider"], "claude")
+        self.assertEqual(failed["failure_kind"], "provider_unavailable")
+        self.assertTrue(failed["fallback_eligible"])
+
+        code, record, path, _ = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["provider"], "codex")
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.assertEqual(record["fallback_session_state"], "fresh")
+        self.assertEqual(record["fallback_from"], str(primary.resolve()))
+        self.assertIn("DEGRADED_SAME_PROVIDER", record["response"]["limitations"][-1])
+        self.assertIn("DEGRADED SAME-PROVIDER FALLBACK", (path.parent / "prompt.txt").read_text())
+        self.assertNotIn("resume", json.loads((path.parent / "command.json").read_text()))
+
+    def test_fallback_reviewer_can_resume_after_plan_revision(self):
+        _, _, primary, _ = self.invoke("codex", case="quota")
+        extra = ("--provider", "codex", "--fallback-from", str(primary))
+        code, record, fallback_result, _ = self.invoke("codex", case="revise", extra=extra)
+        self.assertEqual(code, 0, record)
+        self.plan.write_text("Revised after fallback findings", encoding="utf-8")
+        code, record, _, _ = self.invoke(
+            "codex", extra=extra + ("--resume", str(fallback_result)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.assertEqual(record["session_id"], SESSION)
+        self.assertEqual(record["fallback_session_state"], "resumed")
+        self.assertIn("resumed its prior", record["response"]["limitations"][-1])
+
+    def test_non_availability_failure_cannot_authorize_fallback(self):
+        code, failed, primary, _ = self.invoke("codex", case="malformed")
+        self.assertEqual(code, 1)
+        self.assertFalse(failed["fallback_eligible"])
+        code, record, _, error = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("not eligible", error)
+
+    def test_user_interruption_is_not_fallback_eligible(self):
+        kind, eligible = runner.classify_failure(
+            "Run was interrupted; no approval recorded.", self.root, "codex")
+        self.assertEqual(kind, "provider_failure")
+        self.assertFalse(eligible)
+
+    def test_review_content_cannot_spoof_fallback_eligibility(self):
+        self.root.joinpath("stdout.txt").write_text("quota exhausted", encoding="utf-8")
+        kind, eligible = runner.classify_failure("Invalid review verdict.", self.root, "codex")
+        self.assertEqual(kind, "provider_failure")
+        self.assertFalse(eligible)
+
+    def test_agent_message_cannot_spoof_failed_turn_eligibility(self):
+        events = [
+            {"type": "agent_message", "text": "The plan discusses a quota."},
+            {"type": "turn.failed", "error": {"message": "repository read failed"}},
+        ]
+        self.root.joinpath("stdout.txt").write_text(
+            "\n".join(json.dumps(event) for event in events), encoding="utf-8")
+        kind, eligible = runner.classify_failure(
+            "Codex reported a failed turn; inspect the captured diagnostics.",
+            self.root, "codex")
+        self.assertEqual(kind, "provider_failure")
+        self.assertFalse(eligible)
+
+    def test_structured_quota_failure_is_fallback_eligible(self):
+        event = {"type": "turn.failed", "error": {"message": "usage limit reached"}}
+        self.root.joinpath("stdout.txt").write_text(json.dumps(event), encoding="utf-8")
+        kind, eligible = runner.classify_failure(
+            "Codex reported a failed turn; inspect the captured diagnostics.",
+            self.root, "codex")
+        self.assertEqual(kind, "provider_unavailable")
+        self.assertTrue(eligible)
+
+    def test_claude_structured_429_is_fallback_eligible(self):
+        code, failed, primary, _ = self.invoke("codex", case="claude_429")
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["failure_kind"], "provider_unavailable")
+        self.assertTrue(failed["fallback_eligible"])
+        code, record, _, _ = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+
+    def test_claude_result_text_cannot_spoof_fallback_eligibility(self):
+        for case in ("claude_result_spoof", "claude_400"):
+            with self.subTest(case=case):
+                code, failed, _, _ = self.invoke("codex", case=case)
+                self.assertEqual(code, 1)
+                self.assertEqual(failed["failure_kind"], "provider_failure")
+                self.assertFalse(failed["fallback_eligible"])
+
+    def test_claude_api_status_policy(self):
+        base = {"type": "result", "subtype": "success", "is_error": True,
+                "terminal_reason": "api_error", "result": "model text"}
+        for status, expected in ((429, True), (401, True), (500, True), (520, True), (599, True),
+                                 (400, False), (403, False), (600, False), ("429", False),
+                                 (True, False), ([429], False), ({"code": 429}, False)):
+            with self.subTest(status=status):
+                self.root.joinpath("stdout.txt").write_text(
+                    json.dumps(dict(base, api_error_status=status)), encoding="utf-8")
+                kind, eligible = runner.classify_failure(
+                    "claude exited 1; inspect stdout.txt and stderr.txt.", self.root, "claude")
+                self.assertEqual(eligible, expected)
+                self.assertEqual(kind, "provider_unavailable" if expected else "provider_failure")
+
+    def test_quota_failure_allows_fresh_same_provider_inspection(self):
+        extra = ("--base", self.base, "--builder", "codex")
+        code, failed, primary, _ = self.invoke("codex", mode="inspect", case="quota", extra=extra)
+        self.assertEqual(code, 1)
+        self.assertEqual(failed["provider"], "claude")
+        code, record, _, _ = self.invoke(
+            "codex", mode="inspect",
+            extra=extra + ("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.assertIsNone(record["previous"])
+
+    def test_inspection_fallback_requires_the_failed_snapshot(self):
+        extra = ("--base", self.base, "--builder", "codex")
+        _, _, primary, _ = self.invoke("codex", mode="inspect", case="quota", extra=extra)
+        self.repo.joinpath("after_failure.py").write_text("changed\n", encoding="utf-8")
+        code, record, _, error = self.invoke(
+            "codex", mode="inspect",
+            extra=extra + ("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 1)
+        self.assertIsNone(record)
+        self.assertIn("Code changed after", error)
+
+    def test_build_preserves_degraded_approval_assurance(self):
+        _, _, primary, _ = self.invoke("codex", case="quota")
+        _, approval, approval_path, _ = self.invoke(
+            "codex", extra=("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(approval["assurance"], "degraded_same_provider")
+        code, record, _, _ = self.invoke(
+            "codex", mode="build", case="build",
+            extra=("--builder", "codex", "--approval", str(approval_path), "--proof", "test"))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["approval_assurance"], "degraded_same_provider")
 
     def test_unique_artifacts_and_failed_round_does_not_reuse_reply(self):
         _, _, first, _ = self.invoke()
@@ -286,6 +527,547 @@ class RunnerTests(unittest.TestCase):
         code, _, _, error = self.invoke(extra=("--artifacts", str(self.repo / "runs")))
         self.assertEqual(code, 1)
         self.assertIn("outside", error)
+
+
+def stream(session, calls, response, model="claude-test"):
+    """Claude stream-json in the shape observed from Claude Code 2.1.280."""
+    events = [{"type": "system", "subtype": "init", "model": model}]
+    for index, (name, tool_input, ok, text, structured) in enumerate(calls):
+        tool_id = f"toolu_{index}"
+        events.append({"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "id": tool_id, "name": name, "input": tool_input}]}})
+        result = {"type": "user", "message": {"content": [
+            {"type": "tool_result", "tool_use_id": tool_id, "content": text,
+             "is_error": None if ok else True}]}}
+        if structured is not None:
+            result["tool_use_result"] = structured
+        events.append(result)
+    # Claude Code 2.1.280 delivers --json-schema output through an internal tool call.
+    events.append({"type": "assistant", "message": {"content": [
+        {"type": "tool_use", "id": "toolu_final", "name": "StructuredOutput", "input": response}]}})
+    events.append({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "toolu_final", "content": "Structured output provided successfully"}]}})
+    events.append({"type": "result", "subtype": "success", "is_error": False, "session_id": session,
+                   "structured_output": response, "modelUsage": {model: {}}, "usage": {"input_tokens": 1}})
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+def codex_stream(thread, searches, value, extra_items=()):
+    """Codex JSONL in the shape observed from Codex CLI 0.155.1 with web_search="live"."""
+    events = [{"type": "thread.started", "thread_id": thread}, {"type": "turn.started"}]
+    for index, (query, results) in enumerate(searches):
+        events.append({"type": "item.completed", "item": {
+            "id": f"ws{index}", "type": "web_search", "query": query, "action": {"type": "search", "query": query},
+            "results": [{"type": "text_result", "url": u, "title": title, "snippet": snippet}
+                        for u, title, snippet in results]}})
+    events += [{"type": "item.completed", "item": item} for item in extra_items]
+    events.append({"type": "item.completed", "item": {"id": "final", "type": "agent_message",
+                                                       "text": json.dumps(value)}})
+    events.append({"type": "turn.completed", "usage": {"input_tokens": 5, "output_tokens": 2}})
+    return "\n".join(json.dumps(event) for event in events) + "\n"
+
+
+def fetch(url, body, ok=True):
+    return ("WebFetch", {"url": url, "prompt": "quote it"}, ok, body, {"url": url, "code": 200, "result": body})
+
+
+def search(*urls):
+    return ("WebSearch", {"query": "q"}, True, "Links: " + json.dumps([{"url": u} for u in urls]), None)
+
+
+def read(path, content, ok=True):
+    return ("Read", {"file_path": str(path)}, ok, "1\t" + content,
+            {"type": "text", "file": {"filePath": str(path), "content": content}} if ok else None)
+
+
+def claim(locator, excerpt, kind="web", question="q1", claim_id="c1"):
+    return {"id": claim_id, "question_id": question, "claim": "A supported statement.", "source_type": kind,
+            "locator": locator, "excerpt": excerpt, "confidence": "high", "limitation": ""}
+
+
+def response(*claims):
+    return {"summary": "Researched the assigned question.", "claims": list(claims),
+            "coverage": ["assigned angle"], "limitations": []}
+
+
+class PanelTests(unittest.TestCase):
+    SESSIONS = {"w1": "11111111-1111-4111-8111-111111111111",
+                "w2": "22222222-2222-4222-8222-222222222222",
+                "w3": "33333333-3333-4333-8333-333333333333"}
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="claudex-panel-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        (self.repo / "existing.py").write_text("original value\n")
+        self.plan = self.root / "plan.md"
+        self.plan.write_text("# Plan\nSECRET-PLAN-BODY keep the original.\n", encoding="utf-8")
+        self.artifacts = self.root / "runs"
+        self.fake = self.root / "fake-panel"
+        self.fake.mkdir()
+        self.cli = self.root / "fake_cli.py"
+        self.cli.write_text(FAKE_CLI)
+        self.spec = {"questions": [{"id": "q1", "text": "Is alpha stable?"}],
+                     "workers": [{"id": "w1", "kind": "web", "angle": "official docs", "question_ids": ["q1"]},
+                                 {"id": "w2", "kind": "web", "angle": "community", "question_ids": ["q1"]},
+                                 {"id": "w3", "kind": "repo", "angle": "code", "question_ids": ["q1"]}],
+                     "wall_clock_seconds": 60}
+        self.script("w1", [fetch("https://a.example/doc", "Alpha is stable since 2026.")],
+                    response(claim("https://a.example/doc/", "alpha is  STABLE")))
+        self.script("w2", [search("https://b.example/x"), fetch("https://b.example/y", "Beta says alpha works.")],
+                    response(claim("https://b.example/y", "alpha works")))
+        self.script("w3", [read(self.repo / "existing.py", "original value\n")],
+                    response(claim("existing.py:1", "original value", "repo")))
+
+    def script(self, worker, calls, value):
+        (self.fake / f"{worker}.jsonl").write_text(stream(self.SESSIONS[worker], calls, value))
+
+    def call(self, *args, validated=True, env=None, host="codex"):
+        output, error = io.StringIO(), io.StringIO()
+        variables = {"FAKE_PANEL_DIR": str(self.fake), **(env or {})}
+        with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.cli)]), \
+             patch.object(runner, "VALIDATED_READ_CONFINEMENT_CLI", ("fake-cli",) if validated else ()), \
+             patch.object(runner, "VALIDATED_CODEX_WEB_PANEL_CLI", ("1.0",) if validated else ()), \
+             patch.dict(os.environ, variables), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = runner.main(["panel", "--host", host, "--repo", str(self.repo), "--plan", str(self.plan),
+                                "--artifacts", str(self.artifacts), *args])
+        return code, output.getvalue(), error.getvalue()
+
+    def dry_run(self, spec=None, host="codex"):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(spec or self.spec))
+        code, out, error = self.call("--spec", str(path), "--dry-run", host=host)
+        return code, (json.loads(out) if code == 0 else None), error
+
+    def launch(self, spec=None, extra=(), host="codex", **kwargs):
+        code, dry, error = self.dry_run(spec, host)
+        self.assertEqual(code, 0, error)
+        old = set(self.artifacts.glob("claudex-*/result.json")) if self.artifacts.exists() else set()
+        code, _, error = self.call("--spec", str(self.root / "panel.json"),
+                                   "--payload-sha256", dry["payload_sha256"], *extra, host=host, **kwargs)
+        new = set(self.artifacts.glob("claudex-*/result.json")) - old if self.artifacts.exists() else set()
+        self.assertLessEqual(len(new), 1)
+        record = json.loads(next(iter(new)).read_text()) if new else None
+        return code, record, dry, error
+
+    def test_dry_run_shows_exact_web_payload_without_repository_material(self):
+        code, dry, _ = self.dry_run()
+        self.assertEqual(code, 0)
+        self.assertEqual((dry["launches"], dry["concurrency"]), (3, 2))
+        self.assertEqual(set(dry["web_worker_prompts"]), {"w1", "w2"})
+        for prompt in dry["web_worker_prompts"].values():
+            self.assertNotIn("SECRET-PLAN-BODY", prompt)
+            self.assertNotIn(str(self.repo), prompt)
+        self.assertEqual(dry["repo_workers"][0]["id"], "w3")
+        self.assertFalse(self.artifacts.exists())
+
+    def test_launch_requires_matching_payload_digest(self):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(self.spec))
+        for extra in ((), ("--payload-sha256", "0" * 64)):
+            code, _, error = self.call("--spec", str(path), *extra)
+            self.assertEqual(code, 1)
+            self.assertIn("payload-sha256", error)
+        _, dry, _ = self.dry_run()
+        self.plan.write_text("# Plan\nChanged after approval.\n", encoding="utf-8")
+        code, _, error = self.call("--spec", str(path), "--payload-sha256", dry["payload_sha256"])
+        self.assertEqual(code, 1)
+        self.assertIn("does not match", error)
+
+    def test_completed_panel_binds_workers_sessions_and_evidence(self):
+        code, record, dry, error = self.launch()
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["status"], "completed")
+        self.assertEqual(record["assurance"], "cross_provider_panel")
+        self.assertEqual({w["session_id"] for w in record["workers"]}, set(self.SESSIONS.values()))
+        self.assertEqual(len({w["artifacts"] for w in record["workers"]}), 3)
+        self.assertEqual(record["coverage"], {"q1": {"w1": 1, "w2": 1, "w3": 1}})
+        for worker in ("w1", "w2", "w3"):
+            argv = json.loads((self.fake / f"{worker}.argv.json").read_text())
+            self.assertIn("--restricted", argv)
+            self.assertNotIn("--resume", argv)
+            self.assertEqual(argv[argv.index("--tools") + 1],
+                             "Read,Glob,Grep" if worker == "w3" else "WebSearch,WebFetch")
+        for worker in ("w1", "w2"):
+            stdin = (self.fake / f"{worker}.stdin.txt").read_text(encoding="utf-8")
+            self.assertEqual(stdin, dry["web_worker_prompts"][worker])
+            cwd = Path((self.fake / f"{worker}.cwd.txt").read_text()).resolve()
+            self.assertTrue(cwd.is_relative_to(self.artifacts.resolve()))
+        self.assertEqual(Path((self.fake / "w3.cwd.txt").read_text()).resolve(), self.repo)
+        self.assertIn("SECRET-PLAN-BODY", (self.fake / "w3.stdin.txt").read_text(encoding="utf-8"))
+        panel = json.loads(Path(record["panel"]).read_text())
+        self.assertTrue(panel["untrusted_content"])
+        self.assertEqual({c["status"] for c in panel["claims"]}, {"retrieved"})
+        with self.assertRaises(runner.RunError):
+            runner.check_approval(record, self.plan, self.repo)
+
+    def test_web_citation_statuses(self):
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w1"], [
+            fetch("https://a.example/doc", "Alpha is stable."), fetch("https://c.example/", "Gamma text."),
+            search("https://s.example/only-searched"),
+            fetch("https://d.example/denied", "Hidden text.", ok=False)], response()))["calls"]
+        cases = [(claim("https://a.example/doc", "alpha is stable"), "retrieved"),
+                 (claim("https://a.example/doc", "not on the page"), "unverified"),
+                 (claim("https://s.example/only-searched", "anything"), "unverified"),
+                 (claim("https://a.example/doc", "gamma text"), "unverified"),
+                 (claim("https://never.example/", "alpha is stable"), "mismatch"),
+                 (claim("https://d.example/denied", "hidden text"), "mismatch")]
+        statuses = runner.verify_claims([c for c, _ in cases], calls, "web", self.repo)
+        self.assertEqual(statuses, [expected for _, expected in cases])
+
+    def test_web_excerpts_match_rendered_markdown(self):
+        body = ('## Deprecation\n\n**Deprecated since version 3.12:**\n> Use [`datetime.now()`](#datetime.now '
+                '"datetime.now") with [`UTC`](#UTC) instead.')
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w1"], [fetch("https://docs.example/dt", body)],
+                                                 response()))["calls"]
+        claims = [claim("https://docs.example/dt", "Deprecated since version 3.12: Use datetime.now() with UTC instead."),
+                  claim("https://docs.example/dt", "removed in Python 3.14", claim_id="c2")]
+        self.assertEqual(runner.verify_claims(claims, calls, "web", self.repo), ["retrieved", "unverified"])
+
+    def test_repo_citation_statuses_use_what_the_worker_read(self):
+        (self.repo / "docs").mkdir()
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w3"], [
+            read(self.repo / "existing.py", "original value\n"),
+            ("Grep", {"pattern": "value"}, True, "docs/grepped.md:3:some value", None)], response()))["calls"]
+        (self.repo / "existing.py").write_text("edited after the worker read it\n")
+        cases = [(claim("existing.py:1", "original value", "repo"), "retrieved"),
+                 (claim("existing.py", "edited after", "repo"), "unverified"),
+                 (claim("docs/grepped.md:3", "some value", "repo"), "retrieved"),
+                 (claim("docs/grepped.md", "not in the grep line", "repo"), "unverified"),
+                 (claim("never_read.py", "original value", "repo"), "mismatch"),
+                 (claim("../outside.py", "original value", "repo"), "mismatch"),
+                 (claim(str(self.repo / "existing.py"), "original value", "repo"), "mismatch")]
+        statuses = runner.verify_claims([c for c, _ in cases], calls, "repo", self.repo)
+        self.assertEqual(statuses, [expected for _, expected in cases])
+
+    def test_outside_read_that_succeeds_fails_the_run_without_panel_output(self):
+        outside = self.root / "outside-secret.txt"
+        self.script("w3", [read(outside, "FAKE-SECRET")], response(claim("existing.py", "x", "repo")))
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertNotIn("assurance", record)
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+        self.assertNotIn("FAKE-SECRET", json.dumps(record))
+
+    def test_outside_read_counts_even_when_the_worker_then_crashes(self):
+        outside = self.root / "outside-secret.txt"
+        truncated = stream(self.SESSIONS["w3"], [read(outside, "FAKE-SECRET")], response())
+        (self.fake / "w3.jsonl").write_text(truncated.rsplit("\n", 2)[0] + '\n{"type": "res')
+        (self.fake / "w3.exit").write_text("1")
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(next(w for w in record["workers"] if w["id"] == "w3")["status"], "confinement_violation")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+
+    def test_launch_time_model_or_effort_change_invalidates_the_digest(self):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(self.spec))
+        code, out, _ = self.call("--spec", str(path), "--dry-run")
+        dry = json.loads(out)
+        self.assertEqual((dry["model"], dry["effort"]), ("CLI default (unresolved)", "CLI default"))
+        for extra in (("--model", "other-model"), ("--effort", "max")):
+            code, _, error = self.call("--spec", str(path), "--payload-sha256", dry["payload_sha256"], *extra)
+            self.assertEqual(code, 1)
+            self.assertIn("does not match", error)
+
+    def test_error_pages_and_unrelated_grep_hits_are_not_evidence(self):
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w1"], [
+            ("WebFetch", {"url": "https://e.example/"}, True, "Not Found: alpha is stable",
+             {"url": "https://e.example/", "code": 404, "result": "Not Found: alpha is stable"})], response()))["calls"]
+        self.assertEqual(runner.verify_claims([claim("https://e.example/", "alpha is stable")], calls, "web",
+                                              self.repo), ["unverified"])
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w3"], [
+            ("Grep", {"pattern": "x"}, True, "src/foobar.py:3:x = 1", None)], response()))["calls"]
+        claims = [claim("bar.py", "x = 1", "repo"), claim("src/foobar.py:3", "x = 1", "repo", claim_id="c2"),
+                  claim("src/foobar.py", "y = 2", "repo", claim_id="c3")]
+        self.assertEqual(runner.verify_claims(claims, calls, "repo", self.repo),
+                         ["mismatch", "retrieved", "unverified"])
+        calls = runner.parse_panel_stream(stream(self.SESSIONS["w3"], [
+            ("Grep", {"pattern": "x", "output_mode": "files_with_matches"}, True, "Found 2 files\nsrc/foobar.py\nmy-2-file.py",
+             None)], response()))["calls"]
+        claims = [claim("src/foobar.py", "x = 1", "repo"), claim("my-2-file.py", "x", "repo", claim_id="c2")]
+        self.assertEqual(runner.verify_claims(claims, calls, "repo", self.repo), ["unverified", "unverified"])
+
+    def test_denied_outside_read_is_recorded_but_not_fatal(self):
+        self.script("w3", [read(Path("/etc/hosts"), "", ok=False), read(self.repo / "existing.py", "original value\n")],
+                    response(claim("existing.py", "original value", "repo")))
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 0, record)
+        attempts = next(w for w in record["workers"] if w["id"] == "w3")["read_confinement_attempts"]
+        self.assertEqual(attempts, [{"tool": "Read", "target": str(Path("/etc/hosts")), "succeeded": False}])
+
+    def test_invalid_worker_responses_fail_that_worker_and_make_the_panel_partial(self):
+        good = claim("https://b.example/y", "alpha works")
+        bad_responses = [
+            response(dict(good, excerpt="x" * 301)),
+            response(dict(good, extra="field")),
+            response(dict(good, question_id="q9")),
+            response(dict(good, source_type="repo")),
+            dict(response(good), summary="s" * 1001),
+            dict(response(good), claims=[dict(good, id=f"c{i}") for i in range(21)]),
+        ]
+        for value in bad_responses:
+            with self.subTest(value=str(value)[:80]):
+                self.script("w2", [fetch("https://b.example/y", "Beta says alpha works.")], value)
+                code, record, _, _ = self.launch()
+                self.assertEqual(code, 1)
+                self.assertEqual(record["status"], "partial")
+                self.assertEqual(record["failed_workers"], ["w2"])
+                self.assertNotIn("assurance", record)
+
+    def test_under_covered_question_is_partial(self):
+        self.script("w1", [fetch("https://a.example/doc", "Unrelated.")],
+                    response(claim("https://a.example/doc", "alpha is stable")))
+        (self.fake / "w3.exit").write_text("1")
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "partial")
+        self.assertEqual(record["under_covered"], ["q1"])
+        panel = json.loads(Path(record["panel"]).read_text())
+        self.assertEqual(panel["under_covered"], ["q1"])
+
+    def test_mismatch_claims_are_excluded_and_worker_flagged(self):
+        self.script("w2", [fetch("https://b.example/y", "Beta says alpha works.")],
+                    response(claim("https://b.example/y", "alpha works"),
+                             claim("https://invented.example/", "made up", claim_id="c2")))
+        code, record, _, _ = self.launch()
+        self.assertEqual(code, 0, record)
+        panel = json.loads(Path(record["panel"]).read_text())
+        self.assertEqual(panel["flagged_workers"], ["w2"])
+        self.assertNotIn("https://invented.example/", json.dumps(panel["claims"]))
+        self.assertTrue(all(c["worker_flagged"] for c in panel["claims"] if c["worker_id"] == "w2"))
+
+    def test_spec_errors_are_refused_before_launch(self):
+        worker = self.spec["workers"][0]
+        broken = {
+            "duplicate worker": dict(self.spec, workers=self.spec["workers"] + [worker]),
+            "unknown question": dict(self.spec, workers=[dict(worker, question_ids=["q9"])] + self.spec["workers"][1:]),
+            "one angle": dict(self.spec, workers=[dict(w, angle="same") for w in self.spec["workers"]]),
+            "concurrency": dict(self.spec, concurrency=5),
+            "wall clock": dict(self.spec, wall_clock_seconds=30),
+            "unknown field": dict(self.spec, retries=2),
+            "bad worker id": dict(self.spec, workers=[dict(worker, id="../w1")] + self.spec["workers"][1:]),
+        }
+        for name, spec in broken.items():
+            with self.subTest(name):
+                code, _, error = self.dry_run(spec)
+                self.assertEqual(code, 1)
+                self.assertTrue(error.strip())
+        self.assertFalse(self.artifacts.exists())
+
+    def test_cli_gates_restricted_mode_and_repo_canary(self):
+        code, record, _, error = self.launch(env={"FAKE_NO_RESTRICTED": "1"})
+        self.assertEqual(code, 1)
+        self.assertIn("--restricted", error)
+        code, _, _, error = self.launch(validated=False)
+        self.assertEqual(code, 1)
+        self.assertIn("canary", error)
+        code, record, _, _ = self.launch(extra=("--allow-unvalidated-cli",), validated=False)
+        self.assertEqual(code, 0, record)
+        self.assertTrue(record["allow_unvalidated_cli"])
+        self.assertFalse(record["cli_validated"])
+        web_only = dict(self.spec, workers=self.spec["workers"][:2])
+        code, record, _, _ = self.launch(web_only, validated=False)
+        self.assertEqual(code, 0, record)
+
+    def test_panel_roles_are_cross_provider_and_codex_repo_workers_refused(self):
+        path = self.root / "panel.json"
+        path.write_text(json.dumps(self.spec))
+        code, _, error = self.call("--spec", str(path), "--dry-run", "--provider", "codex")
+        self.assertEqual(code, 1)
+        self.assertIn("opposite", error)
+        code, _, error = self.call("--spec", str(path), "--dry-run", host="claude")
+        self.assertEqual(code, 1)
+        self.assertIn("Codex repo workers are refused", error)
+
+    def assert_no_live_workers(self, workers):
+        time.sleep(0.4)
+        beats = {w: (self.fake / f"{w}.beat").stat().st_mtime for w in workers if (self.fake / f"{w}.beat").exists()}
+        time.sleep(0.4)
+        for worker, mtime in beats.items():
+            self.assertEqual((self.fake / f"{worker}.beat").stat().st_mtime, mtime, f"{worker} still running")
+
+    def test_stopped_before_launch_is_cancelled_without_starting_process(self):
+        stop = threading.Event()
+        stop.set()
+        ctx = {"run_dir": self.artifacts, "provider": "claude", "harness": "claude-code",
+               "model": None, "effort": None, "stop": stop, "deadline": time.monotonic() + 60}
+        self.artifacts.mkdir()
+        with patch.object(runner, "execute") as execute:
+            record = runner.run_panel_worker(self.spec["workers"][0], "prompt", 1, ctx)
+        self.assertEqual(record["status"], "cancelled")
+        # A worker whose aggregate budget is already spent does not start either, even before the
+        # coordinator has set the stop signal (another worker's own timeout freed the thread).
+        late = dict(ctx, stop=threading.Event(), deadline=time.monotonic() - 0.01)
+        with patch.object(runner, "execute") as execute_late:
+            record_late = runner.run_panel_worker(self.spec["workers"][1], "prompt", 2, late)
+        self.assertEqual(record_late["status"], "cancelled")
+        execute_late.assert_not_called()
+        self.assertEqual(record["error"], "Panel stopped before this worker launched.")
+        self.assertEqual(json.loads((Path(record["artifacts"]) / "result.json").read_text()), record)
+        execute.assert_not_called()
+        self.assertFalse((Path(record["artifacts"]) / "command.json").exists())
+
+    def test_aggregate_deadline_kills_workers_and_cancels_queue(self):
+        for worker in self.SESSIONS:
+            (self.fake / f"{worker}.sleep").write_text("30")
+        started = time.monotonic()
+        with patch.dict(runner.PANEL_LIMITS, {"wall_min": 1}):
+            code, record, _, _ = self.launch(dict(self.spec, wall_clock_seconds=2))
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("wall-clock", record["error"])
+        self.assertFalse((self.fake / "w3.argv.json").exists())
+        self.assertEqual(next(w for w in record["workers"] if w["id"] == "w3")["status"], "cancelled")
+        self.assert_no_live_workers(["w1", "w2"])
+
+    def test_interrupt_in_coordinator_kills_every_worker(self):
+        for worker in self.SESSIONS:
+            (self.fake / f"{worker}.sleep").write_text("30")
+
+        def interrupt_after_launch(pending, timeout):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not all(
+                    (self.fake / f"{w}.beat").exists() for w in ("w1", "w2")):
+                time.sleep(0.05)
+            raise KeyboardInterrupt
+
+        started = time.monotonic()
+        with patch.object(runner, "wait_workers", side_effect=interrupt_after_launch):
+            code, record, _, _ = self.launch()
+        self.assertLess(time.monotonic() - started, 20, "workers were not killed; shutdown waited for them")
+        self.assertEqual(code, 1)
+        self.assertEqual(record["error"], "Panel was interrupted.")
+        self.assert_no_live_workers(["w1", "w2", "w3"])
+
+    def test_interrupt_cancels_queued_workers_before_killing_running_worker(self):
+        for worker in self.SESSIONS:
+            (self.fake / f"{worker}.sleep").write_text("30")
+
+        def interrupt_after_launch(pending, timeout):
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline and not (self.fake / "w1.beat").exists():
+                time.sleep(0.05)
+            self.assertTrue((self.fake / "w1.beat").exists())
+            raise KeyboardInterrupt
+
+        cancelled = []
+        cancellations_at_kill = []
+        original_cancel = runner.concurrent.futures.Future.cancel
+        original_kill = runner.kill_tree
+
+        def track_cancel(future):
+            result = original_cancel(future)
+            if result:
+                cancelled.append(future)
+            return result
+
+        def track_kill(proc):
+            cancellations_at_kill.append(len(cancelled))
+            original_kill(proc)
+
+        started = time.monotonic()
+        with patch.object(runner, "wait_workers", side_effect=interrupt_after_launch), \
+             patch.object(runner.concurrent.futures.Future, "cancel", track_cancel), \
+             patch.object(runner, "kill_tree", side_effect=track_kill):
+            code, record, _, _ = self.launch(dict(self.spec, concurrency=1))
+        self.assertLess(time.monotonic() - started, 20)
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertEqual(record["error"], "Panel was interrupted.")
+        self.assertTrue(cancellations_at_kill)
+        self.assertTrue(all(count == 2 for count in cancellations_at_kill))
+        statuses = {worker["id"]: worker["status"] for worker in record["workers"]}
+        self.assertEqual([statuses[worker] for worker in ("w2", "w3")], ["cancelled", "cancelled"])
+        for index, worker in enumerate(("w2", "w3"), 2):
+            self.assertFalse((self.fake / f"{worker}.argv.json").exists())
+            self.assertNotIn("artifacts", next(w for w in record["workers"] if w["id"] == worker))
+            self.assertFalse(list(Path(record["artifacts"]).glob(f"w{index:02d}-*")))
+        self.assert_no_live_workers(["w1"])
+
+    def codex_web_spec(self):
+        return dict(self.spec, workers=self.spec["workers"][:2])
+
+    def codex_script(self, worker, searches, value, extra_items=()):
+        (self.fake / f"{worker}.jsonl").write_text(codex_stream(self.SESSIONS[worker], searches, value, extra_items))
+
+    def test_claude_host_runs_locked_down_codex_web_workers(self):
+        self.codex_script("w1", [("alpha", [("https://a.example/doc", "Alpha docs", "Alpha is **stable** since 2026.")])],
+                          response(claim("https://a.example/doc", "alpha is stable since 2026")))
+        self.codex_script("w2", [("alpha", [("https://b.example/y", "Beta", "Beta says alpha works.")])],
+                          response(claim("https://b.example/y", "alpha works")))
+        code, record, dry, error = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual((record["provider"], record["harness"], record["status"]), ("codex", "codex-cli", "completed"))
+        self.assertEqual(record["assurance"], "cross_provider_panel")
+        self.assertEqual(record["disabled_features"], ["apps", "plugins", "shell_tool", "view_image"])
+        argv = json.loads((self.fake / "w1.argv.json").read_text())
+        for flag in ("--ignore-user-config", "--ephemeral", 'web_search="live"', "read-only", "--output-schema"):
+            self.assertIn(flag, argv)
+        self.assertNotIn("resume", argv)
+        self.assertIn("web search only", dry["web_worker_prompts"]["w1"])
+        self.assertNotIn("SECRET-PLAN-BODY", (self.fake / "w1.stdin.txt").read_text(encoding="utf-8"))
+
+    def test_codex_citations_bind_to_the_result_snippet_for_that_url(self):
+        calls = runner.parse_codex_panel_stream(codex_stream(self.SESSIONS["w1"], [
+            ("q", [("https://a.example/", "A", "Alpha is stable."), ("https://b.example/", "B", "Beta text.")])],
+            response()))["calls"]
+        cases = [(claim("https://a.example/", "alpha is stable"), "retrieved"),
+                 (claim("https://a.example", "alpha is stable"), "mismatch"),
+                 (claim("https://a.example/", "beta text"), "unverified"),
+                 (claim("https://never.example/", "alpha is stable"), "mismatch")]
+        self.assertEqual(runner.verify_claims([c for c, _ in cases], calls, "web", self.repo, "codex"),
+                         [expected for _, expected in cases])
+
+    def test_any_codex_item_beyond_web_search_fails_the_run(self):
+        self.codex_script("w1", [("alpha", [("https://a.example/doc", "A", "Alpha is stable.")])],
+                          response(claim("https://a.example/doc", "alpha is stable")),
+                          extra_items=[{"id": "e", "type": "error", "message": "provider notice"},
+                                       {"id": "x", "type": "command_execution", "command": "cat ~/.ssh/id_rsa",
+                                        "aggregated_output": "FAKE-KEY", "exit_code": 0, "status": "completed"}])
+        self.codex_script("w2", [("alpha", [("https://b.example/y", "B", "Beta says alpha works.")])],
+                          response(claim("https://b.example/y", "alpha works")))
+        code, record, _, _ = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual(code, 1)
+        self.assertEqual(record["status"], "failed")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+        self.assertNotIn("FAKE-KEY", json.dumps(record))
+
+    def test_failed_or_merely_started_disallowed_codex_items_fail_the_run(self):
+        good = response(claim("https://b.example/y", "alpha works"))
+        searches = [("alpha", [("https://b.example/y", "B", "Beta says alpha works.")])]
+        failed_exec = {"id": "x", "type": "command_execution", "command": "cat secret", "status": "failed"}
+        self.codex_script("w1", searches, good, extra_items=[failed_exec])
+        self.codex_script("w2", searches, good)
+        code, record, _, _ = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual((code, record["status"]), (1, "failed"))
+        # An otherwise successful stream whose only trace of the tool is an item.started event.
+        lines = codex_stream(self.SESSIONS["w1"], searches, good).splitlines()
+        lines.insert(2, json.dumps({"type": "item.started",
+                                    "item": {"id": "y", "type": "mcp_tool_call", "status": "in_progress"}}))
+        (self.fake / "w1.jsonl").write_text("\n".join(lines) + "\n")
+        code, record, _, _ = self.launch(self.codex_web_spec(), host="claude")
+        self.assertEqual((code, record["status"]), (1, "failed"))
+        worker = next(w for w in record["workers"] if w["id"] == "w1")
+        self.assertEqual(worker["status"], "confinement_violation")
+        self.assertEqual(worker["read_confinement_attempts"][0]["tool"], "mcp_tool_call")
+        self.assertFalse((Path(record["artifacts"]) / "panel.json").exists())
+
+    def test_codex_panel_requires_core_features_in_the_probe(self):
+        code, _, _, error = self.launch(self.codex_web_spec(), host="claude", env={"FAKE_FEATURES_DROP": "view_image"})
+        self.assertEqual(code, 1)
+        self.assertIn("view_image", error)
+
+    def test_unvalidated_codex_cli_is_refused_without_override(self):
+        code, _, _, error = self.launch(self.codex_web_spec(), host="claude", validated=False)
+        self.assertEqual(code, 1)
+        self.assertIn("live web-panel validation", error)
 
 
 if __name__ == "__main__":

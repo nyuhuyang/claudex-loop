@@ -10,7 +10,7 @@ Compatibility entry point: the builder is explicitly Codex. The shared workflow 
 Load the shared [build reference](../claudex-loop/references/build.md) and [runtime reference](../claudex-loop/references/runtime.md). Preserve `SPEC_FILE` (mapped to the runner's `--plan`), `LOG_FILE`, `PROOF_CMD`, `MAX_FIX_ROUNDS`, and explicit model/effort arguments. The spec may have any filename; never substitute PLAN.md silently.
 
 - In Claude Code, Claude coordinates and delegates implementation to Codex through the runner's `build --host claude --builder codex` path. Claude then inspects all changes and independently runs proof checks. Log evidence and limitations. A fresh Claude CLI inspector is also available through the shared runner if useful.
-- In Codex, implement in the current host session with its normal tools, then use a fresh Claude inspector through `inspect --host codex --builder codex`. Do not ask Codex to certify its own changes as independent review.
+- In Codex, implement in the current host session with its normal tools, then use a fresh Claude inspector through `inspect --host codex --builder codex`. If Claude is unavailable and its failed result is marked fallback-eligible, automatically launch a fresh Codex inspector with `--provider codex --fallback-from FAILED_RESULT`. Record `degraded_same_provider`; do not describe it as cross-provider inspection.
 
 Use the current valid plan approval when this follows claudex-loop. An explicitly requested standalone work order can use `--unreviewed-spec`, with that status recorded. If the spec still needs consequential decisions, settle those before delegating; do not build by inventing missing requirements.
 

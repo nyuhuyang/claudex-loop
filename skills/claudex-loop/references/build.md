@@ -30,8 +30,17 @@ python RUNNER inspect --host claude --builder codex --repo PROJECT --plan PLAN_P
 python RUNNER inspect --host codex --builder claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 ```
 
+If the selected other-provider inspector fails with `fallback_eligible=true`, immediately run a fresh same-provider inspection, unless `fallback=off` was selected:
+
+```text
+python RUNNER inspect --host codex --builder codex --provider codex --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT --fallback-from FAILED_CLAUDE_RESULT
+python RUNNER inspect --host claude --builder claude --provider claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT --fallback-from FAILED_CODEX_RESULT
+```
+
+The fallback result is `degraded_same_provider`. It is useful adversarial review from a clean context, but it is not cross-provider validation. The failed primary result must describe the same base commit and code snapshot; after any code change, try the primary inspector again before falling back. Preserve both attempt records and surface the primary failure and reduced assurance in the final report.
+
 The runner supplies the tracked diff plus a manifest of all changed and untracked files. The reviewer must open added files. It fingerprints the inspected state and refuses approval if code changes during inspection. Ignored files are not enumerated by Git: inspect any ignored build deliverables separately. Changed submodules require an explicit inspection path rather than a silently incomplete diff.
 
-Log findings, coverage, limitations and host dispositions. Fix accepted findings, rerun affected proof checks, then inspect again with a fresh other-provider session. An inspection applies to the recorded snapshot only. Later edits invalidate it. If the host takes over, choose the inspector opposite the new builder. For mixed authorship, log the split and have each provider review the other's changes; disclose remaining gaps if the round budget is exhausted.
+Log findings, coverage, limitations, assurance and host dispositions. Fix accepted findings, rerun affected proof checks, then inspect again with a fresh session; prefer the other provider and repeat the validated fallback only if it remains unavailable. An inspection applies to the recorded snapshot only. Later edits invalidate it. If the host takes over, choose the inspector opposite the new builder. For mixed authorship, log the split and have each provider review the other's changes; disclose remaining gaps if the round budget is exhausted.
 
 Stop at the configured fix and inspection budgets. Report unresolved findings rather than claiming approval. An explicit `inspect=off` remains a logged opt-out. The final human-facing result includes proof, inspected snapshot, deviations, residual findings and any unreviewed edits. Commits, pushes and releases follow the user's existing authorization.

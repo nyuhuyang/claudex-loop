@@ -1,3 +1,9 @@
+---
+status: completed
+created: 2026-09-22
+completed: 2026-09-23
+---
+
 # Plan Review Log: fix PR #1 CI failures
 Phases 0-1 (recon + interrogation) complete — plan locked with the user (ledger confirmed, no load-bearing decisions, cosmetic C1–C3 accepted). MAX_ROUNDS=5. Reviewer: Codex 0.156.0 (model gpt-6-sol per config), fresh session, read-only.
 
@@ -26,3 +32,6 @@ The requested artifact checks alone did not reliably catch the mutation (executo
 
 ### Claude's verdict (round 2)
 Proof passed locally (65 tests, validate, diff-check); timing tests 25/25; the queue-cancel mutation is caught 5/5. 2 of MAX_FIX_ROUNDS=2 rounds used, no takeover. Post-build inspection: Claude inspected the Codex-built diff directly (codex-build design); no extra inspector.
+
+## Outcome
+Committed as `e7315cf` and pushed to PR #1; CI green on ubuntu, macos and windows (runs 35856391929 and 35856387899).

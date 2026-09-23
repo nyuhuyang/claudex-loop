@@ -1,6 +1,7 @@
 ---
-status: in-progress
+status: completed
 created: 2026-09-22
+completed: 2026-09-23
 ---
 
 # Plan: fix PR #1 CI failures (Windows path fixture, panel cancellation race)

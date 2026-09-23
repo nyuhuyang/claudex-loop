@@ -896,11 +896,18 @@ class PanelTests(unittest.TestCase):
         stop = threading.Event()
         stop.set()
         ctx = {"run_dir": self.artifacts, "provider": "claude", "harness": "claude-code",
-               "model": None, "effort": None, "stop": stop}
+               "model": None, "effort": None, "stop": stop, "deadline": time.monotonic() + 60}
         self.artifacts.mkdir()
         with patch.object(runner, "execute") as execute:
             record = runner.run_panel_worker(self.spec["workers"][0], "prompt", 1, ctx)
         self.assertEqual(record["status"], "cancelled")
+        # A worker whose aggregate budget is already spent does not start either, even before the
+        # coordinator has set the stop signal (another worker's own timeout freed the thread).
+        late = dict(ctx, stop=threading.Event(), deadline=time.monotonic() - 0.01)
+        with patch.object(runner, "execute") as execute_late:
+            record_late = runner.run_panel_worker(self.spec["workers"][1], "prompt", 2, late)
+        self.assertEqual(record_late["status"], "cancelled")
+        execute_late.assert_not_called()
         self.assertEqual(record["error"], "Panel stopped before this worker launched.")
         self.assertEqual(json.loads((Path(record["artifacts"]) / "result.json").read_text()), record)
         execute.assert_not_called()

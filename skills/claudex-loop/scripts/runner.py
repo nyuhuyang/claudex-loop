@@ -936,7 +936,10 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
     record.update(provider=ctx["provider"], harness=ctx["harness"], artifacts=str(child),
                   status="running", requested_model=ctx["model"], requested_effort=ctx["effort"])
     try:
-        if ctx["stop"].is_set():
+        # A worker freed by another's timeout must not start once the aggregate budget is spent,
+        # and no worker may outlive it.
+        remaining = ctx["deadline"] - time.monotonic()
+        if ctx["stop"].is_set() or remaining <= 0:
             record.update(status="cancelled", error="Panel stopped before this worker launched.")
             save(child / "result.json", record)
             return record
@@ -951,7 +954,7 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
         save(child / "command.json", argv)
         (child / "prompt.txt").write_text(prompt, encoding="utf-8")
         try:
-            code = execute(argv, prompt, cwd, child, ctx["timeout"], ctx["live"], ctx["stop"])
+            code = execute(argv, prompt, cwd, child, min(ctx["timeout"], remaining), ctx["live"], ctx["stop"])
         finally:
             # Audit tool calls before judging the exit: an outside read that succeeded must fail
             # the run even when the worker later crashed, timed out or was killed.
@@ -1058,11 +1061,11 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
     save(run_dir / "result.json", record)
     print(json.dumps({"provider": provider, "mode": "panel", "launches": len(spec["workers"]),
                       "artifacts": str(run_dir)}), flush=True)
+    deadline = time.monotonic() + spec["wall_clock_seconds"]
     ctx = {"run_dir": run_dir, "repo": repo, "provider": provider, "harness": harness,
            "disable": disable, "prefix": prefix, "model": model,
-           "effort": effort, "timeout": min(args.timeout, spec["wall_clock_seconds"]),
+           "effort": effort, "timeout": args.timeout, "deadline": deadline,
            "live": set(), "stop": threading.Event()}
-    deadline = time.monotonic() + spec["wall_clock_seconds"]
     stop_reason = None
     pool = concurrent.futures.ThreadPoolExecutor(max_workers=spec["concurrency"])
     futures = {pool.submit(run_panel_worker, w, prompts[w["id"]], i, ctx): w

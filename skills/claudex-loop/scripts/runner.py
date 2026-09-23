@@ -314,8 +314,41 @@ def codex_readonly_disables(prefix: list[str], wanted: tuple = CODEX_READONLY_DI
     return [feature for feature in wanted if feature in known]
 
 
+def codex_mcp_off(prefix: list[str], disable: list[str], allow: list[str]) -> list[str]:
+    """Names of enabled Codex MCP servers to switch off for a read-only run; fail closed.
+
+    Only servers defined in the user's config can be overridden with -c; plugin-provided ones must
+    already be gone via --disable plugins. A second listing proves nothing unapproved stays enabled.
+    """
+    def listing(extra: list[str]) -> list:
+        argv = prefix + ["mcp", "list", "--json"] + [a for f in disable for a in ("--disable", f)] + extra
+        probe = subprocess.run(argv, capture_output=True, stdin=subprocess.DEVNULL, timeout=30)
+        try:
+            servers = json.loads(probe.stdout) if not probe.returncode else None
+        except ValueError:
+            servers = None
+        if not isinstance(servers, list) or not all(isinstance(x, dict) and isinstance(x.get("name"), str)
+                                                    for x in servers):
+            raise RunError("Codex MCP listing failed; cannot prove MCP servers are off for a read-only run.")
+        return servers
+    off = [x["name"] for x in listing([]) if x.get("enabled") and x["name"] not in allow]
+    bad = [name for name in off if not re.fullmatch(r"[A-Za-z0-9_-]+", name)]
+    if bad:
+        raise RunError(f"Cannot address Codex MCP server name(s) {bad} in a config override.")
+    still = [x["name"] for x in listing(mcp_off_args(off)) if x.get("enabled") and x["name"] not in allow]
+    if still:
+        raise RunError(f"Codex MCP server(s) {still} stay enabled; allow them with --codex-mcp-allow or "
+                       "remove them before a read-only run.")
+    return off
+
+
+def mcp_off_args(names: list[str]) -> list[str]:
+    return [arg for name in names for arg in ("-c", f"mcp_servers.{name}.enabled=false")]
+
+
 def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
-            session=None, kind: str | None = None, disable: list[str] | tuple = ()) -> list[str]:
+            session=None, kind: str | None = None, disable: list[str] | tuple = (),
+            mcp_off: list[str] | tuple = ()) -> list[str]:
     if mode == "panel" and provider == "codex":
         if kind != "web":
             raise RunError("Codex panel workers support only kind=web.")
@@ -348,6 +381,7 @@ def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
             args += ["--skip-git-repo-check", "--output-schema", str(run_dir / "schema.json")]
             for feature in disable:
                 args += ["--disable", feature]
+            args += mcp_off_args(list(mcp_off))
         if model:
             args += ["-m", model]
         if effort:
@@ -1216,12 +1250,13 @@ def run(args) -> int:
             raise RunError("CLI version probe failed. Check the resolved executable before retrying.")
         record["cli_version"] = version.stdout.decode("utf-8", errors="replace").strip()
         record["executable"] = prefix
-        disable = (codex_readonly_disables(prefix, required=("apps",))
-                   if provider == "codex" and args.mode in ("review", "inspect") else [])
-        if disable:
-            record["disabled_features"] = disable
+        disable, mcp_off = [], []
+        if provider == "codex" and args.mode in ("review", "inspect"):
+            disable = codex_readonly_disables(prefix, required=("apps",))
+            mcp_off = codex_mcp_off(prefix, disable, args.codex_mcp_allow)
+            record.update(disabled_features=disable, mcp_disabled=mcp_off, mcp_allowed=args.codex_mcp_allow)
         argv = prefix + command(provider, args.mode, run_dir, args.model, args.effort,
-                                previous["session_id"] if previous else None, disable=disable)
+                                previous["session_id"] if previous else None, disable=disable, mcp_off=mcp_off)
         save(run_dir / "command.json", argv)
         print(json.dumps({"provider": provider, "model": args.model or "CLI default (unresolved)",
                           "mode": args.mode, "artifacts": str(run_dir)}), flush=True)
@@ -1284,6 +1319,8 @@ def main(argv=None) -> int:
     parser.add_argument("--proof", help="Exact agreed proof command, passed as data to the builder.")
     parser.add_argument("--artifacts", help="Persistent run directory outside the target checkout.")
     parser.add_argument("--timeout", type=int, default=600)
+    parser.add_argument("--codex-mcp-allow", action="append", default=[], metavar="NAME",
+                        help="Keep this Codex MCP server enabled in read-only review/inspection (repeatable).")
     parser.add_argument("--spec", help="Panel spec JSON (questions, workers, budgets).")
     parser.add_argument("--dry-run", action="store_true",
                         help="Panel: print launches, budgets, exact web-worker prompts and payload_sha256.")

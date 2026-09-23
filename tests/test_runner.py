@@ -29,6 +29,15 @@ if '--version' in sys.argv:
 if '--help' in sys.argv:
     print('' if os.environ.get('FAKE_NO_RESTRICTED') else '  --restricted  Restricted mode')
     sys.exit(0)
+if sys.argv[1:3] == ['mcp', 'list']:
+    if os.environ.get('FAKE_MCP_FAIL'):
+        sys.exit(2)
+    off = {a.split('.')[1] for a in sys.argv if a.startswith('mcp_servers.') and a.endswith('.enabled=false')}
+    sticky = os.environ.get('FAKE_MCP_STICKY', '')
+    servers = [('playwright', True), ('tradingview-desktop', True), ('disabled_one', False)]
+    servers += [(sticky, True)] if sticky else []
+    print(json.dumps([{'name': n, 'enabled': e and (n == sticky or n not in off)} for n, e in servers]))
+    sys.exit(0)
 if sys.argv[1:3] == ['features', 'list']:
     if os.environ.get('FAKE_FEATURES_FAIL'):
         sys.exit(2)
@@ -196,6 +205,10 @@ class RunnerTests(unittest.TestCase):
         disabled = [argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"]
         self.assertEqual(disabled, ["apps", "plugins"])
         self.assertEqual(record["disabled_features"], ["apps", "plugins"])
+        self.assertEqual(record["mcp_disabled"], ["playwright", "tradingview-desktop"])
+        overrides = [argv[i + 1] for i, arg in enumerate(argv) if arg == "-c" and argv[i + 1].startswith("mcp_servers.")]
+        self.assertEqual(overrides, ["mcp_servers.playwright.enabled=false",
+                                     "mcp_servers.tradingview-desktop.enabled=false"])
         with patch.dict(os.environ, {"FAKE_FEATURES_EMPTY": "1"}):
             code, record, _, _ = self.invoke("claude")
         self.assertEqual(code, 1)
@@ -211,6 +224,19 @@ class RunnerTests(unittest.TestCase):
             code, record, _, _ = self.invoke("claude")
         self.assertEqual(code, 1)
         self.assertIn("feature probe failed", record["error"])
+
+    def test_codex_mcp_servers_are_off_unless_allowed_and_proven_off(self):
+        code, record, path, _ = self.invoke("claude", extra=("--codex-mcp-allow", "playwright"))
+        self.assertEqual(code, 0, record)
+        self.assertEqual((record["mcp_disabled"], record["mcp_allowed"]), (["tradingview-desktop"], ["playwright"]))
+        self.assertNotIn("mcp_servers.playwright.enabled=false", json.loads((path.parent / "command.json").read_text()))
+        for env, message in (({"FAKE_MCP_STICKY": "cua_repl"}, "stay enabled"),
+                             ({"FAKE_MCP_FAIL": "1"}, "MCP listing failed"),
+                             ({"FAKE_MCP_STICKY": "bad.name"}, "Cannot address")):
+            with self.subTest(env=env), patch.dict(os.environ, env):
+                code, record, _, _ = self.invoke("claude")
+                self.assertEqual(code, 1)
+                self.assertIn(message, record["error"])
 
     def test_codex_resume_keeps_read_only_and_explicit_session(self):
         args = runner.command("codex", "review", self.root, session=SESSION)

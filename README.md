@@ -67,6 +67,10 @@ The user controls consequential decisions and authorization. A request to review
 
 The plan records what to build; the review log records the findings, dispositions, models, proof and remaining uncertainty. Both default to `docs/exec-plans/active/<date>-<slug>.md` and `docs/exec-plans/active/<date>-<slug>.review-log.md` so a later run cannot overwrite an earlier one, and both paths are configurable. The plan is an execution plan in the `exec-plan` format: `status`/`created` frontmatter and a `## Progress Checklist` whose checkboxes are ticked only after each step is verified, so another session can resume from the first unchecked item. The pair moves to `docs/exec-plans/completed/` (with `status: completed`) only when every item is checked or explained. Detailed CLI diagnostics live in a unique directory outside the target checkout.
 
+### With research skill packs
+
+When a research skill pack such as CCFA (`ccf-*`) is installed, Claudex Loop judges during recon whether the project is frontier research work (a paper, publishable experiments, a rebuttal or a submission). If it is, the plan names the research skills each provider uses, copies the applicable evidence and review standards into its acceptance criteria because isolated reviewers do not load user skills, and links its checklist to `ccfa.yaml` gates. Ordinary software work skips this. When the answer is unclear, the interview asks. See [research skills](skills/claudex-loop/references/research-skills.md).
+
 ## Install
 
 Both CLIs must be installed and authenticated for the full cross-provider workflow. Python **3.10+** runs the shared adapter; no runtime pip packages or separate API keys are required. Check `codex --version`, `codex login status`, `claude --version` and `claude auth status`. See the [runtime reference](skills/claudex-loop/references/runtime.md) for tested CLI versions and permission boundaries.

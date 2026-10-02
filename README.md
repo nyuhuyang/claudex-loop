@@ -127,9 +127,9 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 | `builder` | current host | `claude` or `codex` |
 | `reviewer_model`, `builder_model`, `inspector_model` | each CLI's configuration | Explicit per-role model override |
 | `reviewer_effort`, `builder_effort`, `inspector_effort` | each CLI's configuration | Explicit supported reasoning effort |
-| `rounds` / `MAX_ROUNDS` | `5` | Completed plan-review round cap |
-| `MAX_FIX_ROUNDS` | `2` | Build-fix attempt cap |
-| `MAX_INSPECTION_ROUNDS` | `2` | Initial inspection plus one reinspection |
+| `rounds` / `MAX_ROUNDS` | `20` | Completed plan-review round cap |
+| `MAX_FIX_ROUNDS` | `20` | Build-fix attempt cap |
+| `MAX_INSPECTION_ROUNDS` | `20` | Initial inspection plus fresh reinspections after fixes |
 | `research` | proportionate to task | `none`, `web`, or explicitly authorized `deep` |
 | `inspect` | `on` | `off` is an explicit, logged opt-out |
 | `fallback` | `same-provider-on-unavailable` | Fresh same-provider review after a recorded provider-unavailable failure; `off` disables it |

@@ -30,14 +30,14 @@ If the user supplies `codex_cli` or `claude_cli`, map the selected provider's ex
 |---|---|---|
 | `PLAN_FILE` / `plan` | `docs/exec-plans/active/<date>-<slug>.md` | Plan path used throughout, including the build handoff. Resolve the plan/log pair once per run. When the path is generated from this default and already exists, add a numeric suffix rather than overwriting; an explicitly supplied path is used as given, including an existing one for `mode=review` |
 | `LOG_FILE` / `log` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only transcript, kept beside its plan. Archive both to `docs/exec-plans/completed/` under the completion rule below |
-| `rounds` / `MAX_ROUNDS` | `5` | Maximum completed plan-review rounds |
+| `rounds` / `MAX_ROUNDS` | `20` | Maximum completed plan-review rounds |
 | `builder` | host | Provider implementing the plan |
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |
 | `mode` | `full` | `full` includes recon/interview; `review` starts from an existing plan |
 | `inspect` | `on` | `off` only when the user explicitly opts out; record it |
 | `fallback` | `same-provider-on-unavailable` | After a recorded quota/authentication/CLI/service/timeout failure, use a fresh same-provider reviewer and mark reduced assurance; `off` disables this |
-| `MAX_FIX_ROUNDS` | `2` | Bounded build-fix attempts before reporting or taking over |
-| `MAX_INSPECTION_ROUNDS` | `2` | Initial inspection plus one after fixes |
+| `MAX_FIX_ROUNDS` | `20` | Bounded build-fix attempts before reporting or taking over |
+| `MAX_INSPECTION_ROUNDS` | `20` | Initial inspection plus fresh reinspections after fixes |
 
 Echo roles, paths, round limits, requested models, fallback policy and inspection opt-out before starting. Preserve existing authorization: a request to plan does not authorize building; a request to plan and implement does. Do authorized preparation before seeking any remaining sign-off.
 

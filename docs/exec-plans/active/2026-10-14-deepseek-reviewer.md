@@ -23,8 +23,8 @@ Let a Claude- or Codex-hosted Claudex Loop use DeepSeek as the plan reviewer (`r
 - [x] An authentication, balance, rate-limit or service failure is recorded as `failure_kind=provider_unavailable`.
 - [x] After that failure the skill reruns without `--provider deepseek`, using the default reviewer or the default non-builder inspector. No degraded same-provider fallback runs. — skill rule in SKILL.md; runner refuses DeepSeek fallback
 - [x] Without `--provider deepseek`, behaviour is unchanged and every existing test passes unmodified. — 93 pre-existing tests pass unmodified
-- [ ] `python scripts/validate.py` passes on Linux, macOS and Windows CI.
-- [ ] `python -m unittest discover -s tests -v` passes on Linux, macOS and Windows CI.
+- [x] `python scripts/validate.py` passes on Linux, macOS and Windows CI. — CI run 38672220186 (`0e456d3`), Linux/macOS/Windows green
+- [x] `python -m unittest discover -s tests -v` passes on Linux, macOS and Windows CI. — CI run 38672220186 (`0e456d3`), Linux/macOS/Windows green
 - [ ] One live DeepSeek review is recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet (`DEEPSEEK_API_KEY` unset; store one with `dsh web` or export it)
 - [ ] One live DeepSeek inspection is recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
 
@@ -330,7 +330,7 @@ Disposable repo `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-pr
 
 - [x] Fake-`dsh` tests for every Automated item under Verification.
 - [x] Full suite and `validate.py` green locally. — 107 tests OK (1 skipped), validate OK, `git diff --check` clean; six safety checks mutation-tested
-- [ ] CI green on Linux, macOS and Windows.
+- [x] CI green on Linux, macOS and Windows. — CI run 38672220186 (`0e456d3`), Linux/macOS/Windows green
 
 ### Documentation
 

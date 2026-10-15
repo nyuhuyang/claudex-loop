@@ -31,6 +31,10 @@ PANEL_WORKERS = PROVIDERS + ("agy",)
 # --allow-unvalidated-cli, which is recorded.
 VALIDATED_DSH_CLI: tuple[str, ...] = ("0.2.0-rc.2",)
 DSH_TOOLS = {"read", "glob", "grep"}
+# dsh-llm-deepseek's stable failure codes that mean the provider, not the request, is unavailable.
+# INVALID_REQUEST, CONTEXT_WINDOW_EXCEEDED and other HTTP_4xx stay ordinary failures.
+DSH_UNAVAILABLE_CODES = {"AUTH", "QUOTA", "RATE_LIMIT", "SERVER", "TRANSPORT", "TIMEOUT",
+                         "MISSING_CREDENTIAL", "INVALID_CREDENTIAL", "HTTP_402", "HTTP_429"}
 # Plugins removed from the dsh headless profile. bash-sandbox stays: `permission` waits for
 # its shell service, and tool-bash alone exposes the shell tool (spike r1-r4, dsh 0.2.0-rc.2).
 DSH_DISABLE = (
@@ -211,12 +215,21 @@ def provider_failure_diagnostic(provider: str, run_dir: Path) -> tuple[str, bool
                         and event.get("type") in ("error", "turn.failed")]
             keys = ("error", "message")
         elif provider == "deepseek":
-            # Provider-owned only: error events and turn_end errors, never text/thinking/final.
-            failures = [{"error": event.get("error") or event.get("message")} if event.get("type") == "error"
-                        else {"error": event["reason"].get("error")}
+            # Provider-owned only: stderr, error events and turn_end errors, never text/thinking/final.
+            failures = [{"error": event.get("error") or event.get("message"), "code": event.get("code")}
+                        if event.get("type") == "error" else {"error": event["reason"].get("error")}
                         for event in dsh_events(body, strict=False)
                         if event.get("type") == "error" or _dsh_turn_error(event)]
-            keys = ("error",)
+            codes = set(re.findall(r"^dsh: ([A-Z][A-Z0-9_]*):", parts[0] if parts else "", re.M))
+            for failure in failures:
+                for value in (failure.get("code"), failure.get("error")):
+                    if isinstance(value, dict):
+                        value = value.get("code")
+                    if isinstance(value, str):
+                        codes.add(value)
+            structured = any(code in DSH_UNAVAILABLE_CODES or re.fullmatch(r"HTTP_5\d\d", code)
+                             for code in codes)
+            keys = ("error", "code")
         else:
             envelope = json.loads(body)
             events = envelope if isinstance(envelope, list) else [envelope]

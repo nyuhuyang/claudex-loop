@@ -295,10 +295,26 @@ events = [{'type': 'session', 'sessionId': sid, 'cwd': os.getcwd()},
           {'type': 'status', 'phase': 'turn_start', 'turn': 1}, call, result,
           {'type': 'status', 'phase': 'step_end', 'turn': 1, 'step': 1,
            'usage': {'inputTokens': 10, 'outputTokens': 5, 'cacheReadTokens': 3}}]
-if case in ('auth', 'violation_and_auth', 'failed_turn'):
+codes = {'server': ('SERVER', 'Internal Server Error'), 'rate': ('RATE_LIMIT', 'Too many requests'),
+         'bad_request': ('INVALID_REQUEST', 'The supported API model names are deepseek-flash'),
+         'failed_turn': ('AUTH', 'rate limit exceeded')}
+if case == 'failed_turn_exit0':
     events.append({'type': 'status', 'phase': 'turn_end', 'turn': 1, 'reason': {'kind': 'error',
-                   'error': {'message': 'rate limit exceeded' if case == 'failed_turn' else 'bad key',
-                             'code': 'AUTH'}}})
+                   'error': {'message': 'Internal Server Error', 'code': 'SERVER'}}})
+    events.append({'type': 'final', 'text': ''})
+    print('\n'.join(json.dumps(e) for e in events))
+    sys.exit(0)
+if case in codes:
+    code, message = codes[case]
+    events.append({'type': 'status', 'phase': 'turn_end', 'turn': 1, 'reason': {'kind': 'error',
+                   'error': {'message': message, 'code': code}}})
+    events.append({'type': 'final', 'text': ''})
+    print('\n'.join(json.dumps(e) for e in events))
+    print('dsh: %s: %s' % (code, message), file=sys.stderr)
+    sys.exit(1)
+if case in ('auth', 'violation_and_auth'):
+    events.append({'type': 'status', 'phase': 'turn_end', 'turn': 1, 'reason': {'kind': 'error',
+                   'error': {'message': 'bad key', 'code': 'AUTH'}}})
     events.append({'type': 'final', 'text': ''})
 else:
     events.append({'type': 'final', 'text': final})
@@ -1973,7 +1989,13 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("provider_unavailable", True))
         code, record, _, _ = self.call(case="final_auth")
         self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("provider_failure", False))
-        code, record, _, _ = self.call(case="failed_turn")
+        for case, kind in (("server", "provider_unavailable"), ("rate", "provider_unavailable"),
+                           ("bad_request", "provider_failure")):
+            with self.subTest(case=case):
+                code, record, _, _ = self.call(case=case)
+                self.assertEqual((code, record["failure_kind"]), (1, kind))
+                self.assertEqual(record["fallback_eligible"], kind == "provider_unavailable")
+        code, record, _, _ = self.call(case="failed_turn_exit0")
         self.assertIn("reported a failed turn", record["error"])
         self.assertEqual(record["failure_kind"], "provider_unavailable")
         code, record, _, _ = self.call(case="patch_warn")

@@ -166,3 +166,12 @@ These material changes need another review:
   - mutation checks: removing the layer check, the allowlist, the torn-line check or the fingerprint catch each makes a test fail;
   - a live run on real dsh with `deepseek-v4-pro` and no override flag passed the preflight with 60 entries, audited 6 calls cleanly and returned REVISE on the seeded bug.
 - **Next:** a fresh Codex re-inspection of `f4ccc85..HEAD`.
+
+## Inspection round 2 — fresh Codex — REVISE (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect2/claudex-dusebin6/result.json`.
+- **Usage:** 1,940,309 input tokens (1,787,264 cached), 7,753 output tokens.
+- **DSI-07 (medium), accepted:** DeepSeek SERVER (5xx) and RATE_LIMIT (429) failures matched no marker, so they were not fallback-eligible.
+  - Fix: the diagnostic now reads dsh's documented stable codes (from the dsh-llm-deepseek README) from stderr `dsh: CODE:` lines and from `error`/`turn_end` events.
+  - Unavailable codes: AUTH, QUOTA, RATE_LIMIT, SERVER, TRANSPORT, TIMEOUT, MISSING_CREDENTIAL, INVALID_CREDENTIAL, HTTP_402, HTTP_429 and HTTP_5xx. INVALID_REQUEST stays ineligible.
+  - Tests cover SERVER, RATE_LIMIT, INVALID_REQUEST and the exit-0 failed turn. The mutation check fails 3 tests. Full suite OK.

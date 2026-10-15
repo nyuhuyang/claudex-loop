@@ -1436,6 +1436,21 @@ class AgyTests(unittest.TestCase):
             self.assertEqual(runner.agy_preflight(["agy"], self.profile, self.root, False, "web"), ("1.2.9", True))
         self.assertIn((["-p", "/usage"], 30), calls)
 
+    def test_agy_schema_carries_lengths_and_prompt_asks_for_brevity(self):
+        schema, limits = runner.AGY_PANEL_SCHEMA, runner.PANEL_LIMITS
+        self.assertEqual(schema["properties"]["summary"]["maxLength"], limits["summary"])
+        self.assertEqual(schema["properties"]["claims"]["maxItems"], limits["claims"])
+        claim = schema["properties"]["claims"]["items"]["properties"]
+        self.assertEqual(claim["excerpt"]["maxLength"], limits["excerpt"])
+        self.assertEqual(claim["confidence"]["enum"], ["high", "medium", "low"])
+        self.assertEqual(schema["required"], runner.PANEL_SCHEMA["required"])
+        self.assertNotIn("maxLength", runner.PANEL_SCHEMA["properties"]["summary"])
+        worker = {"id": "w", "kind": "web", "angle": "docs", "question_ids": ["q1"]}
+        spec = {"questions": [{"id": "q1", "text": "Q?"}]}
+        prompt = runner.panel_prompt(spec, worker, self.root, "", "agy")
+        self.assertIn("summary at most 600 characters", prompt)
+        self.assertNotIn("BE BRIEF", runner.panel_prompt(spec, worker, self.root, "", "codex"))
+
     def test_preflight_accepts_both_empty_plugin_messages_only(self):
         for listing, ok in (("No imported plugins.", True), ("No plugins installed.", True),
                             ("Plugin configured", False)):

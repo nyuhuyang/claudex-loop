@@ -103,6 +103,20 @@ PANEL_SCHEMA = {
     },
     "required": ["summary", "claims", "coverage", "limitations"],
 }
+# agy (Gemini) ignored the prompt's summary limit live (1,011 > 1,000 chars, 2026-10-14), so its
+# schema also carries the lengths. Codex keeps the structure-only schema.
+_L = PANEL_LIMITS
+_AGY_CLAIM_LENGTHS = {"id": _L["id"], "question_id": _L["id"], "claim": _L["claim"],
+                      "locator": _L["locator"], "excerpt": _L["excerpt"], "limitation": _L["limitation"]}
+_AGY_LIST = {"type": "array", "maxItems": _L["list_items"],
+             "items": {"type": "string", "maxLength": _L["list_item"]}}
+AGY_PANEL_SCHEMA = {**PANEL_SCHEMA, "properties": {
+    "summary": {"type": "string", "minLength": 1, "maxLength": _L["summary"]},
+    "claims": {**PANEL_SCHEMA["properties"]["claims"], "maxItems": _L["claims"], "items": {
+        **PANEL_SCHEMA["properties"]["claims"]["items"],
+        "properties": {**PANEL_SCHEMA["properties"]["claims"]["items"]["properties"],
+                       **{key: {"type": "string", "maxLength": n} for key, n in _AGY_CLAIM_LENGTHS.items()}}}},
+    "coverage": _AGY_LIST, "limitations": _AGY_LIST}}
 
 
 class RunError(Exception):
@@ -859,11 +873,12 @@ def panel_prompt(spec: dict, worker: dict, plan: Path, plan_body: str, provider:
         if spec.get("public_context"):
             lines += ["PUBLIC CONTEXT:", spec["public_context"]]
     elif worker["kind"] == "web" and provider == "agy":
-        lines.append(
-            "SOURCE RULES: use search_web to discover sources and read_url_content to fetch them. "
-            "read_url_content saves the page and returns its file path; read that file with view_file. "
-            "source_type is \"web\". The locator is the exact URL passed to read_url_content; the excerpt "
-            "must be copied from that saved page. Search summaries alone are not verified.")
+        lines += [
+            "SOURCE RULES: find pages with search_web; fetch with read_url_content, which returns a saved "
+            "file path; read it with view_file. source_type \"web\"; locator = the exact URL given to "
+            "read_url_content; excerpt copied from that saved page. Search snippets do not count.",
+            "BE BRIEF: summary at most 600 characters; one sentence per claim; at most 8 claims; "
+            "fetch only the pages you cite."]
         if spec.get("public_context"):
             lines += ["PUBLIC CONTEXT:", spec["public_context"]]
     elif worker["kind"] == "web":
@@ -1500,7 +1515,7 @@ def run_panel_worker(worker: dict, prompt: str, index: int, ctx: dict) -> dict:
             cwd = child / "cwd"
             cwd.mkdir(mode=0o700)
         if provider in ("codex", "agy"):
-            save(child / "schema.json", PANEL_SCHEMA)
+            save(child / "schema.json", AGY_PANEL_SCHEMA if provider == "agy" else PANEL_SCHEMA)
         if provider == "agy":
             version, validated = agy_version(adapter["prefix"], adapter["profile"], cwd,
                                              adapter["allow_unvalidated"], "web")

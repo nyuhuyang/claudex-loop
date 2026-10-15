@@ -25,8 +25,8 @@ Let a Claude- or Codex-hosted Claudex Loop use DeepSeek as the plan reviewer (`r
 - [x] Without `--provider deepseek`, behaviour is unchanged and every existing test passes unmodified. — 93 pre-existing tests pass unmodified
 - [x] `python scripts/validate.py` passes on Linux, macOS and Windows CI. — CI run 38672220186 (`0e456d3`), Linux/macOS/Windows green
 - [x] `python -m unittest discover -s tests -v` passes on Linux, macOS and Windows CI. — CI run 38672220186 (`0e456d3`), Linux/macOS/Windows green
-- [ ] One live DeepSeek review is recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet (`DEEPSEEK_API_KEY` unset; store one with `dsh web` or export it)
-- [ ] One live DeepSeek inspection is recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
+- [x] One live DeepSeek review is recorded in `VALIDATION.md`. — 2026-10-15 live run, VALIDATION.md
+- [x] One live DeepSeek inspection is recorded in `VALIDATION.md`. — 2026-10-15 live run, VALIDATION.md
 
 ## Non-goals
 
@@ -245,9 +245,9 @@ Sources: `dsh --profile headless --help`, `dsh --profile headless --dump-config`
 
 ### Live, manual (disposable repository, separately authorized)
 
-- [ ] `runner.py review --host claude --provider deepseek` on a small seeded-defect plan returns a valid result that finds the seeded defect. — BLOCKED: no DeepSeek API key yet
-- [ ] `runner.py inspect --host claude --provider deepseek --base X` on a small diff returns a valid result. — BLOCKED: no DeepSeek API key yet
-- [ ] Both runs are recorded in `VALIDATION.md` with the CLI version, model and usage. — BLOCKED: no DeepSeek API key yet
+- [x] `runner.py review --host claude --provider deepseek` on a small seeded-defect plan returns a valid result that finds the seeded defect. — 2026-10-15 live run, VALIDATION.md
+- [x] `runner.py inspect --host claude --provider deepseek --base X` on a small diff returns a valid result. — 2026-10-15 live run, VALIDATION.md
+- [x] Both runs are recorded in `VALIDATION.md` with the CLI version, model and usage. — 2026-10-15 live run, VALIDATION.md
 
 ## Spike results (2026-10-14, dsh 0.2.0-rc.2)
 
@@ -346,9 +346,9 @@ Disposable repo `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-pr
 
 ### Live validation and handoff
 
-- [ ] Live DeepSeek review recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
-- [ ] Live DeepSeek inspection recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
-- [ ] `VALIDATED_DSH_CLI` set to the version that passed. — BLOCKED: waits for the live canary
+- [x] Live DeepSeek review recorded in `VALIDATION.md`. — 2026-10-15 live run, VALIDATION.md
+- [x] Live DeepSeek inspection recorded in `VALIDATION.md`. — 2026-10-15 live run, VALIDATION.md
+- [x] `VALIDATED_DSH_CLI` set to the version that passed. — `("0.2.0-rc.2",)`
 - [ ] Fresh Codex inspection of the final diff, with findings resolved. — BLOCKED: Codex quota exhausted (user, 2026-10-14); inspect when it returns
 - [ ] Commit and PR, per the user's authorization.
 - [ ] Archive the plan and log to `docs/exec-plans/completed/`.

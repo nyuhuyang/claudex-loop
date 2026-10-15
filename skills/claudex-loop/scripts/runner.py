@@ -29,7 +29,7 @@ INSPECTORS = PROVIDERS + ("deepseek",)
 PANEL_WORKERS = PROVIDERS + ("agy",)
 # dsh versions whose read-only review passed a live canary (VALIDATION.md); others need
 # --allow-unvalidated-cli, which is recorded.
-VALIDATED_DSH_CLI: tuple[str, ...] = ()
+VALIDATED_DSH_CLI: tuple[str, ...] = ("0.2.0-rc.2",)
 DSH_TOOLS = {"read", "glob", "grep"}
 # Plugins removed from the dsh headless profile. bash-sandbox stays: `permission` waits for
 # its shell service, and tool-bash alone exposes the shell tool (spike r1-r4, dsh 0.2.0-rc.2).

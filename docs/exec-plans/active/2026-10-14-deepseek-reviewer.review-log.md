@@ -143,3 +143,9 @@ These material changes need another review:
   - live review and inspection (no DeepSeek API key: `DEEPSEEK_API_KEY` unset);
   - `VALIDATED_DSH_CLI` (empty until the canary passes, so live runs need `--allow-unvalidated-cli`);
   - fresh Codex inspection.
+
+## Live validation (2026-10-15)
+
+- **Key:** read from `~/.deepseek/config.toml` (`api_key`) into the child's `DEEPSEEK_API_KEY` by the host shell; never printed, and the runner never touched it.
+- **Runs:** live review, inspection and resume in a disposable seeded-defect repo all completed cleanly; each found the seeded defect, and the audits were clean. Details are in VALIDATION.md.
+- **Result:** `VALIDATED_DSH_CLI = ("0.2.0-rc.2",)`.

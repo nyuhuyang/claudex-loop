@@ -8,6 +8,15 @@ Live profile canary, 2026-09-23, agy **1.2.9** with **gemini-3.8-flash-medium**:
 
 Live mixed panel rerun, 2026-10-14, agy **1.3.5** (unvalidated, `--allow-unvalidated-cli` recorded) with **gemini-3.8-flash-high**, Claude host, user-approved digest `f575d215…`, one Codex and one agy web worker on a public pathlib question. The first launch stopped in preflight because agy 1.3.5 prints `No plugins installed.` instead of `No imported plugins.` for an empty plugin list; the runner now accepts exactly those two strings. MCP-list and `/usage` formats were unchanged. The relaunch returned `partial`. The Codex worker completed with 5 `unverified` search-snippet claims. The agy worker made 47 tool calls, including `read_url_content` on docs.python.org and raw CPython `pathlib.rst`, and two `run_command` attempts that were denied and recorded as `denied_attempts`. Its structured reply was then rejected because its summary was 1,011 characters, over the 1,000-character limit, so no claim was verified at runtime. An offline check of the copied transcript and saved pages found 7 of its 8 excerpts verbatim in a page saved by `read_url_content` for the claimed URL; the eighth quoted HTML not present in any saved page. This suggests the citation path works, but an agy `retrieved` claim through the runner is still unproven live. The run used about 25% of the account's weekly Gemini pool (34% → 9%, resets 2026-10-16).
 
+## DeepSeek provider (2026-10-15)
+
+Live runs through the runner, dsh **0.2.0-rc.2** (headless profile, run with `--allow-unvalidated-cli` before this canary set `VALIDATED_DSH_CLI`), CLI-default model `deepseek-flash`, Claude host, disposable git repo with a seeded `add` that returns `a - b` and a plan claiming it is already correct:
+- **Review:** `completed`, `cross_provider`, session `session-bcdfcb18-…`, verdict REVISE. A high finding named the `a - b` bug and the failing `assert calc.add(2, 3) == 5`. 5 tool calls audited, all `read`/`glob`/`grep` inside the repo or on the plan; no disallowed, outside, unauditable or working-tree findings. 3,059 input / 2,775 output tokens (8,320 cached), 19.6 s.
+- **Inspection** (diff adding a "Return the sum" docstring above `a - b`): `completed`, `roles.inspector=deepseek`, verdict REVISE with a high finding that the docstring contradicts the code. 5 tool calls audited, clean. 1,279 input / 2,550 output tokens, 17.6 s.
+- **Resume** with host feedback: same session id returned and accepted; 2 tool calls, clean; verdict REVISE for the unchanged plan, 8.6 s.
+
+The dsh key came from the launching environment (`DEEPSEEK_API_KEY`); the runner never read or logged it. Not tested live: Windows (refused), auth/balance failures and confinement violations (covered by fake-dsh tests).
+
 Development date: 2026-09-06. Tests run in disposable fixtures; production repositories were not built or modified by live smoke tests.
 
 ## Automated checks

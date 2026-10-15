@@ -23,8 +23,49 @@ import uuid
 
 
 PROVIDERS = ("claude", "codex")
-HOSTS = BUILDERS = INSPECTORS = PROVIDERS
-REVIEWERS = PANEL_WORKERS = PROVIDERS + ("agy",)
+HOSTS = BUILDERS = PROVIDERS
+REVIEWERS = PROVIDERS + ("agy", "deepseek")
+INSPECTORS = PROVIDERS + ("deepseek",)
+PANEL_WORKERS = PROVIDERS + ("agy",)
+# dsh versions whose read-only review passed a live canary (VALIDATION.md); others need
+# --allow-unvalidated-cli, which is recorded.
+VALIDATED_DSH_CLI: tuple[str, ...] = ("0.2.0-rc.2",)
+DSH_TOOLS = {"read", "glob", "grep"}
+# dsh-llm-deepseek's stable failure codes that mean the provider, not the request, is unavailable.
+# INVALID_REQUEST, CONTEXT_WINDOW_EXCEEDED and other HTTP_4xx stay ordinary failures.
+DSH_UNAVAILABLE_CODES = {"AUTH", "QUOTA", "RATE_LIMIT", "SERVER", "TRANSPORT", "TIMEOUT",
+                         "MISSING_CREDENTIAL", "INVALID_CREDENTIAL", "HTTP_402", "HTTP_429"}
+# Plugins removed from the dsh headless profile. bash-sandbox stays: `permission` waits for
+# its shell service, and tool-bash alone exposes the shell tool (spike r1-r4, dsh 0.2.0-rc.2).
+DSH_DISABLE = (
+    "tool-bash", "tool-pwsh", "pwsh-sandbox", "tool-jobs", "jobs",
+    "tool-subagent", "tool-subagent-fork", "tool-subagent-control", "tool-subagent-list-agents",
+    "tool-workflow", "workflow-ptc", "ptc-runtime",
+    "tool-web", "web", "web-search-deepseek", "web-fetch-http", "mcp-resources",
+    "tool-skill", "skill", "skill-filesystem", "agent-instructions",
+    "tool-todo", "tool-goal", "goal", "goal-round-driver", "command-goal", "plan-mode", "user-questions",
+    "session-title-llm", "session-title", "otel", "session-telemetry-otel",
+)
+# Path-bearing input keys per tool (spike s9); any other key except the numeric read window fails closed.
+DSH_PATH_KEYS = {"read": ("file_path",), "glob": ("path", "pattern"), "grep": ("path",)}
+DSH_OTHER_KEYS = {"read": ("offset", "limit"), "glob": (), "grep": ("pattern", "include")}
+# Entries left enabled in `dsh --profile headless --patch dsh-patch.yml --dump-config` on 0.2.0-rc.2
+# (some are conditionally enabled by a `!!js` expression). Any other enabled entry - a profile or
+# home overlay adding hooks, a replacement tool, filesystem, sandbox or permission plugin - refuses.
+DSH_ENABLED_ALLOWLIST = frozenset((
+    "plugin-manager", "timer", "llm", "deepseek-llm-api-extensions", "session", "session-log-deepseek",
+    "typert", "typert-loader", "typert-gateway", "agent", "plugin-package-inventory-deepseek",
+    "agent-default-model", "llm-retry", "config-editor", "settings", "authorization", "deepseek-account",
+    "credentials", "llm-pi-ai", "session-persistence-jsonl", "attachment-local", "session-query-sqlite",
+    "session-projection", "storage", "storage-json", "storage-domain", "session-projection-cache",
+    "subprocess", "sandbox", "sandbox-policy", "bash-sandbox", "approval", "permission", "shell-env",
+    "fs-observation-policy", "tool-fs", "tool-fs-search", "commands", "command-feedback", "token-meter",
+    "compaction-basic", "command-compact", "subagent", "subagent-spawn-in-process",
+    "subagent-fork-in-process", "timeout-policy", "spill-local", "spill-policy",
+    "session-checkpoint-policy", "tool-result-pruner", "image-offload", "repeat-tool-reminder", "tools",
+    "system-prompt", "agent-loop", "fs-sandbox", "llm-deepseek", "llm-deepseek-account",
+    "headless-startup", "headless-runner",
+))
 VALIDATED_AGY_CLI = ("1.2.9",)
 AGY_MODEL = "gemini-3.1-pro-high"
 AGY_ROLES = ("web", "review")
@@ -33,6 +74,7 @@ UNAVAILABLE_MARKERS = (
     "authentication failed", "login required", "not logged in", "unauthorized",
     "quota", "rate limit", "usage limit", "hit your limit", "service unavailable",
     "temporarily unavailable", "overloaded", "spend limit",
+    "dsh: auth", "missing_credential", "insufficient balance",
 )
 
 
@@ -123,6 +165,10 @@ class RunError(Exception):
     pass
 
 
+class ConfinementViolation(RunError):
+    """A reviewer used a disallowed tool, read outside the repository or changed the tree."""
+
+
 def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -132,16 +178,20 @@ def save(path: Path, value) -> None:
 
 
 def resolve_roles(host: str, reviewer: str | None = None,
-                  builder: str | None = None) -> dict:
+                  builder: str | None = None, inspector: str | None = None) -> dict:
     if host not in HOSTS or (reviewer is not None and reviewer not in REVIEWERS) \
-            or (builder is not None and builder not in BUILDERS):
-        raise RunError("Invalid host, reviewer or builder provider for this role.")
+            or (builder is not None and builder not in BUILDERS) \
+            or (inspector is not None and inspector not in INSPECTORS):
+        raise RunError("Invalid host, reviewer, builder or inspector provider for this role.")
     reviewer = reviewer or next(p for p in PROVIDERS if p != host)
     if reviewer == host:
         raise RunError("The plan reviewer must be the other provider. Change the host to swap roles.")
     builder = builder or host
+    inspector = inspector or next(p for p in PROVIDERS if p != builder)
+    if inspector == builder:
+        raise RunError("The inspector must differ from the builder.")
     return {"host": host, "planner": host, "reviewer": reviewer,
-            "builder": builder, "inspector": next(p for p in PROVIDERS if p != builder)}
+            "builder": builder, "inspector": inspector}
 
 
 def provider_failure_diagnostic(provider: str, run_dir: Path) -> tuple[str, bool]:
@@ -164,6 +214,22 @@ def provider_failure_diagnostic(provider: str, run_dir: Path) -> tuple[str, bool
             failures = [event for event in events if isinstance(event, dict)
                         and event.get("type") in ("error", "turn.failed")]
             keys = ("error", "message")
+        elif provider == "deepseek":
+            # Provider-owned only: stderr, error events and turn_end errors, never text/thinking/final.
+            failures = [{"error": event.get("error") or event.get("message"), "code": event.get("code")}
+                        if event.get("type") == "error" else {"error": event["reason"].get("error")}
+                        for event in dsh_events(body, strict=False)
+                        if event.get("type") == "error" or _dsh_turn_error(event)]
+            codes = set(re.findall(r"^dsh: ([A-Z][A-Z0-9_]*):", parts[0] if parts else "", re.M))
+            for failure in failures:
+                for value in (failure.get("code"), failure.get("error")):
+                    if isinstance(value, dict):
+                        value = value.get("code")
+                    if isinstance(value, str):
+                        codes.add(value)
+            structured = any(code in DSH_UNAVAILABLE_CODES or re.fullmatch(r"HTTP_5\d\d", code)
+                             for code in codes)
+            keys = ("error", "code")
         else:
             envelope = json.loads(body)
             events = envelope if isinstance(envelope, list) else [envelope]
@@ -212,6 +278,9 @@ def validate_fallback(path: Path, repo: Path, plan: Path, provider: str,
     record = json.loads(path.resolve(strict=True).read_text(encoding="utf-8"))
     if not isinstance(record, dict):
         raise RunError("Fallback source must be a result object.")
+    if record.get("provider") == "deepseek":
+        raise RunError("DeepSeek has no same-provider fallback; rerun with the default "
+                       f"{'reviewer' if mode == 'review' else 'inspector'} instead.")
     expected_primary = roles["reviewer"] if mode == "review" else roles["inspector"]
     expected_fallback = roles["host"] if mode == "review" else roles["builder"]
     checks = {
@@ -241,9 +310,10 @@ def cli_prefix(provider: str, override: str | None = None) -> list[str]:
     """Avoid cmd.exe command-string quoting when a Windows npm shim is on PATH."""
     if override and (not Path(override).is_absolute() or not Path(override).is_file()):
         raise RunError("--cli must be an absolute path to an installed CLI executable.")
-    executable = override or shutil.which(provider)
+    name = "dsh" if provider == "deepseek" else provider
+    executable = override or shutil.which(name)
     if not executable:
-        raise RunError(f"{provider} is not on PATH. Install and authenticate its CLI first.")
+        raise RunError(f"{name} is not on PATH. Install and authenticate its CLI first.")
     path = Path(executable)
     if os.name == "nt" and path.suffix.lower() in (".cmd", ".bat", ".ps1"):
         entry = path.parent / "node_modules" / (
@@ -726,10 +796,8 @@ def parse_result(provider: str, mode: str, run_dir: Path, expected_session=None)
                     "observed_models": list(envelope.get("modelUsage", {})),
                     "permission_denials": envelope.get("permission_denials", []),
                     "total_cost_usd": envelope.get("total_cost_usd")}
-    try:
-        uuid.UUID(session)
-    except (ValueError, TypeError, AttributeError) as exc:
-        raise RunError("CLI did not return a valid session UUID.") from exc
+    if not valid_session(provider, session):
+        raise RunError("CLI did not return a valid session UUID.")
     if expected_session and session != expected_session:
         raise RunError("CLI resumed a different session; refusing its result.")
     if mode != "build":
@@ -739,7 +807,20 @@ def parse_result(provider: str, mode: str, run_dir: Path, expected_session=None)
     return {"session_id": session, "response": value, **metadata}
 
 
-def check_approval(record: dict, plan: Path, repo: Path) -> None:
+def valid_session(provider: str, value) -> bool:
+    """Claude/Codex/agy return a UUID; dsh returns ``session-<uuid>``."""
+    if provider == "deepseek":
+        if not isinstance(value, str) or not value.startswith("session-"):
+            return False
+        value = value[len("session-"):]
+    try:
+        uuid.UUID(value)
+    except (ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
+def check_approval(record: dict, plan: Path, repo: Path, host: str | None = None) -> None:
     if (record.get("status") != "completed" or record.get("mode") != "review"
             or record.get("response", {}).get("verdict") != "APPROVED"):
         raise RunError("A completed APPROVED plan review is required.")
@@ -749,20 +830,24 @@ def check_approval(record: dict, plan: Path, repo: Path) -> None:
         raise RunError("Plan changed after approval. Review the current plan again.")
     if record.get("assurance") == "cross_provider_plan_only":
         raise RunError("PLAN_BODY_ONLY review cannot approve a build; obtain a repository-aware review.")
+    roles = record.get("roles") or {}
+    if host and (roles.get("host") != host or roles.get("planner") != host or roles.get("reviewer") == host):
+        raise RunError("Approval roles do not match this host; review the plan again from this host.")
 
 
 def previous_record(path: Path, repo: Path, plan: Path, provider: str, mode: str,
-                    model, effort) -> dict:
+                    model, effort, roles: dict | None = None) -> dict:
     record = json.loads(path.read_text(encoding="utf-8"))
-    for key, expected in {"repo": str(repo), "plan": str(plan), "provider": provider,
-                          "mode": mode, "requested_model": model,
-                          "requested_effort": effort, "status": "completed"}.items():
+    expected_fields = {"repo": str(repo), "plan": str(plan), "provider": provider,
+                       "mode": mode, "requested_model": model,
+                       "requested_effort": effort, "status": "completed"}
+    if roles is not None:
+        expected_fields["roles"] = roles
+    for key, expected in expected_fields.items():
         if record.get(key) != expected:
             raise RunError(f"Resume {key} does not match this run. Start fresh instead.")
-    try:
-        uuid.UUID(record["session_id"])
-    except (ValueError, KeyError, TypeError, AttributeError) as exc:
-        raise RunError("Resume record has no valid session UUID.") from exc
+    if not valid_session(provider, record.get("session_id")):
+        raise RunError("Resume record has no valid session UUID.")
     return record
 
 
@@ -1446,6 +1531,235 @@ def _agy_panel_audit(stdout: str, profile: Path, session: str, kind: str) -> tup
     return audit_agy(stdout, profile, session, kind), [], []
 
 
+def dsh_patch(run_dir: Path, model: str | None) -> Path:
+    """Write the --patch overlay that removes every dsh tool except read/glob/grep (+ tool-fs)."""
+    lines = [f"- id: {entry}\n  disabled: true\n" for entry in DSH_DISABLE]
+    if model:
+        if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", model):
+            raise RunError("DeepSeek model id must be lowercase letters, digits, dots or hyphens.")
+        # A patch replaces the entry's whole config, so both keys are required.
+        lines.append(f"- id: agent-default-model\n  config:\n    provider: deepseek-official\n    model: {model}\n")
+    path = run_dir / "dsh-patch.yml"
+    path.write_text("".join(lines), encoding="utf-8")
+    return path
+
+
+def dsh_command(mode: str, run_dir: Path, model: str | None, session: str | None) -> list[str]:
+    args = ["--profile", "headless", "--patch", str(dsh_patch(run_dir, model)), "--json"]
+    return args + (["--session-id", session] if session else []) + ["-"]
+
+
+def dsh_check_config(prefix: list[str], run_dir: Path, repo: Path, env: dict) -> int:
+    """Refuse a composed profile with a non-vendor layer or any unexpected enabled plugin.
+
+    The --patch overlay only disables known ids; profile and home layers load before it and could
+    add hooks or replacement tools that never appear as headless tool_call events.
+    """
+    patch = str(run_dir / "dsh-patch.yml")
+    result = subprocess.run(prefix + ["--profile", "headless", "--patch", patch, "--dump-config"],
+                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    if result.returncode:
+        raise RunError("dsh --dump-config failed; cannot verify the reviewer's plugin composition.")
+    text = result.stdout.decode("utf-8", errors="replace")
+    (run_dir / "dsh-config.txt").write_text(text, encoding="utf-8")
+    for header in re.findall(r"^# == (.+)$", text, re.M):
+        origin, _, patched = header.partition(", patched by ")
+        for source in [origin] + (patched.split(", ") if patched else []):
+            if not (source.startswith("@deepseek-ai/") or source == patch):
+                raise RunError(f"dsh profile has a non-vendor layer ({source}); run DeepSeek reviews "
+                               "with an empty headless profile overlay.")
+    enabled = []
+    for block in re.split(r"^(?=- id: )", text, flags=re.M):
+        entry = re.match(r"- id: (\S+)", block)
+        if entry and not re.search(r"^  disabled: true$", block, re.M):
+            enabled.append(entry.group(1))
+    if not enabled:
+        raise RunError("dsh --dump-config listed no entries; cannot verify the plugin composition.")
+    unexpected = sorted(set(enabled) - DSH_ENABLED_ALLOWLIST)
+    if unexpected:
+        raise RunError(f"dsh profile enables unverified plugins: {', '.join(unexpected)}.")
+    return len(enabled)
+
+
+def dsh_env() -> dict:
+    return {**os.environ, "DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
+            "DSH_TELEMETRY_MODE": "DISABLED"}
+
+
+def dsh_events(stdout: str, strict: bool = True) -> list:
+    events = []
+    for line in stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            if strict:
+                raise RunError("DeepSeek event stream contains a non-JSON line.") from None
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+        elif strict:
+            raise RunError("DeepSeek event stream contains a non-object event.")
+    return events
+
+
+def _dsh_turn_error(event: dict) -> bool:
+    reason = event.get("reason")
+    return (event.get("type") == "status" and event.get("phase") == "turn_end"
+            and isinstance(reason, dict) and reason.get("kind") == "error")
+
+
+def dsh_fingerprint(repo: Path) -> str:
+    """Content hashes of changed/untracked files, HEAD and the index; status lines alone miss edits."""
+    try:
+        state = snapshot(repo, "HEAD")
+        index = git(repo, "ls-files", "-s", "-z")
+    except (RunError, subprocess.SubprocessError) as exc:
+        raise RunError(f"DeepSeek review requires a git repository with a commit: {exc}") from exc
+    return digest(json.dumps(state, sort_keys=True).encode() + index)
+
+
+def _dsh_review_prompt(repo: Path) -> str:
+    return (_standard_review_prompt()
+            + f"Your repository root is {repo}. Read only files inside it; the plan text is already "
+              "included below.\nReply with exactly one JSON object matching this JSON Schema and nothing "
+              "else:\n" + json.dumps(REVIEW_SCHEMA, separators=(",", ":")) + "\n")
+
+
+def _dsh_path_ok(value, base: Path, repo: Path, plan: Path) -> bool:
+    if not isinstance(value, str) or not value or value.startswith("~"):
+        return False
+    try:
+        path = Path(value) if Path(value).is_absolute() else base / value
+        resolved = path.resolve()
+    except (RuntimeError, OSError, ValueError):  # symlink loop, NUL byte, bad path: not auditable
+        return False
+    return resolved.is_relative_to(repo) or resolved == plan
+
+
+def _dsh_glob_ok(pattern, base: Path, repo: Path, plan: Path) -> bool:
+    """Check the literal prefix of a glob; a `..` after a wildcard could escape, so refuse it."""
+    if not isinstance(pattern, str) or not pattern:
+        return False
+    parts = Path(pattern).parts
+    literal = []
+    for index, part in enumerate(parts):
+        if any(ch in part for ch in "*?[{"):
+            if ".." in parts[index:]:
+                return False
+            break
+        literal.append(part)
+    return _dsh_path_ok(str(Path(*literal)) if literal else ".", base, repo, plan)
+
+
+def dsh_audit(stdout: str, repo: Path, plan: Path) -> dict:
+    """Audit every tool call dsh reported. Unauditable evidence counts as a violation."""
+    disallowed, outside, unauditable, calls = [], [], [], {}
+    events = dsh_events(stdout, strict=False)
+    for number, line in enumerate(stdout.splitlines(), 1):
+        if line.strip():
+            try:
+                ok = isinstance(json.loads(line), dict)
+            except ValueError:
+                ok = False
+            if not ok:
+                unauditable.append(f"stream line {number} is not a complete JSON object")
+    for event in events:
+        kind = event.get("type")
+        if kind == "tool_call":
+            tool, call_id, args = event.get("tool"), event.get("callId"), event.get("input")
+            # dsh caps strings at 8 KiB and events at 32 KiB and can drop input entirely.
+            if event.get("truncated") or not isinstance(tool, str) or not isinstance(call_id, str) \
+                    or not isinstance(args, dict):
+                unauditable.append(f"tool_call {call_id!r} is truncated or malformed")
+                continue
+            calls[call_id] = tool
+            if tool not in DSH_TOOLS:
+                disallowed.append(tool)
+                continue
+            if "sandbox_permissions" in args:
+                disallowed.append(f"{tool} escalation")
+            base = repo
+            if tool in ("glob", "grep") and "path" in args:
+                if not _dsh_path_ok(args["path"], repo, repo, plan):
+                    outside.append(f"{tool}.path={args['path']}")
+                    continue
+                base = (repo / args["path"]).resolve()  # _dsh_path_ok above already resolved it
+            for key, value in args.items():
+                if key == "sandbox_permissions" or key == "justification":
+                    continue
+                if key in DSH_PATH_KEYS[tool]:
+                    ok = (_dsh_glob_ok(value, base, repo, plan) if (tool, key) == ("glob", "pattern")
+                          else key == "path" or _dsh_path_ok(value, repo, repo, plan))
+                    if not ok:
+                        outside.append(f"{tool}.{key}={value}")
+                elif key not in DSH_OTHER_KEYS[tool] or (
+                        tool == "read" and not (isinstance(value, int) and not isinstance(value, bool))) or (
+                        tool == "grep" and not isinstance(value, str)):
+                    unauditable.append(f"{tool} argument {key!r} is not in the audit map")
+        elif kind == "tool_result":
+            # Body truncation is fine: confinement uses the call's input. Correlation is not optional.
+            result_id = event.get("callId")
+            if not isinstance(result_id, str) or result_id not in calls \
+                    or not isinstance(event.get("status"), str):
+                unauditable.append(f"tool_result {event.get('callId')!r} has no matching call or status")
+    return {"tool_calls_audited": len(calls), "disallowed_tool_calls": disallowed,
+            "read_confinement_violations": outside, "unauditable_tool_events": unauditable}
+
+
+def _dsh_review_audit(ctx: dict) -> dict:
+    run_dir = ctx["run_dir"]
+    stdout_path, stderr_path = run_dir / "stdout.txt", run_dir / "stderr.txt"
+    stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
+    stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
+    try:
+        audit = dsh_audit(stdout, ctx["repo"], ctx["plan"])
+    except Exception as exc:  # any audit crash is unauditable evidence, never an unrecorded run
+        audit = {"tool_calls_audited": None, "disallowed_tool_calls": [], "read_confinement_violations": [],
+                 "unauditable_tool_events": [f"audit failed: {type(exc).__name__}: {exc}"]}
+    try:
+        if dsh_fingerprint(ctx["repo"]) != ctx["fingerprint"]:
+            audit["working_tree_changed"] = True
+    except (RunError, OSError, subprocess.SubprocessError) as exc:
+        audit["unauditable_tool_events"].append(f"post-run working-tree check failed: {exc}")
+    if audit["disallowed_tool_calls"] or audit["read_confinement_violations"] \
+            or audit["unauditable_tool_events"] or audit.get("working_tree_changed"):
+        audit["confinement_violation"] = True
+    # An unknown patch id or an inactive entry only warns; a reviewer must not run on a partial patch.
+    elif "patch: entry" in stderr or "did not activate" in stderr:
+        audit["patch_error"] = True
+    return audit
+
+
+def _dsh_review_parse(run_dir: Path, expected_session, model) -> dict:
+    events = dsh_events((run_dir / "stdout.txt").read_text(encoding="utf-8", errors="replace"))
+    if any(event.get("type") == "error" or _dsh_turn_error(event) for event in events):
+        raise RunError("DeepSeek reported a failed turn; inspect the captured diagnostics.")
+    sessions = [event.get("sessionId") for event in events if event.get("type") == "session"]
+    finals = [event.get("text") for event in events if event.get("type") == "final"]
+    if len(sessions) != 1 or not valid_session("deepseek", sessions[0]):
+        raise RunError("Missing or ambiguous DeepSeek session event.")
+    if len(finals) != 1 or not isinstance(finals[0], str) or not finals[0].strip():
+        raise RunError("Missing, empty or ambiguous DeepSeek final reply.")
+    if expected_session and sessions[0] != expected_session:
+        raise RunError("CLI resumed a different session; refusing its result.")
+    text = finals[0].strip()
+    fenced = re.fullmatch(r"```(?:json)?\s*\n(.*)\n```", text, re.S)
+    try:
+        value = json.loads(fenced.group(1) if fenced else text)
+    except ValueError as exc:
+        raise RunError("DeepSeek final reply is not one JSON object.") from exc
+    steps = [event for event in events if event.get("type") == "status" and event.get("phase") == "step_end"]
+    usage = None
+    if steps and all(isinstance(step.get("usage"), dict) for step in steps):
+        usage = {key: sum(int(step["usage"].get(source) or 0) for step in steps)
+                 for key, source in (("input_tokens", "inputTokens"), ("output_tokens", "outputTokens"),
+                                     ("cached_input_tokens", "cacheReadTokens"))}
+    return {"session_id": sessions[0], "response": validate_review(value), "usage": usage,
+            "observed_models": []}
+
+
 PROVIDER_ADAPTERS = {
     "claude": {"prompt": lambda spec, worker, plan, body: panel_prompt(spec, worker, plan, body, "claude"),
                "command": lambda child, adapter, worker, timeout: command(
@@ -1455,11 +1769,12 @@ PROVIDER_ADAPTERS = {
                "calls": tool_calls,
                "panel_audit": lambda stdout, profile, session, kind, repo:
                    _ordinary_panel_audit(stdout, "claude", kind, repo),
-               "review_prompt": _standard_review_prompt,
+               "review_prompt": lambda repo: _standard_review_prompt(),
                "review_command": lambda mode, child, model, effort, session, disable, mcp_off, timeout:
                    command("claude", mode, child, model, effort, session, disable=disable, mcp_off=mcp_off),
                "review_parse": lambda child, session, model: parse_result("claude", "review", child, session),
-               "review_audit": lambda child, profile: None,
+               "review_env": lambda ctx: None,
+               "review_audit": lambda ctx: {},
                "verify": lambda claims, calls, kind, repo: verify_claims(claims, calls, kind, repo, "claude")},
     "codex": {"prompt": lambda spec, worker, plan, body: panel_prompt(spec, worker, plan, body, "codex"),
               "command": lambda child, adapter, worker, timeout: command(
@@ -1469,11 +1784,12 @@ PROVIDER_ADAPTERS = {
               "calls": codex_tool_calls,
               "panel_audit": lambda stdout, profile, session, kind, repo:
                   _ordinary_panel_audit(stdout, "codex", kind, repo),
-              "review_prompt": _standard_review_prompt,
+              "review_prompt": lambda repo: _standard_review_prompt(),
               "review_command": lambda mode, child, model, effort, session, disable, mcp_off, timeout:
                   command("codex", mode, child, model, effort, session, disable=disable, mcp_off=mcp_off),
               "review_parse": lambda child, session, model: parse_result("codex", "review", child, session),
-              "review_audit": lambda child, profile: None,
+              "review_env": lambda ctx: None,
+              "review_audit": lambda ctx: {},
               "verify": lambda claims, calls, kind, repo: verify_claims(claims, calls, kind, repo, "codex")},
     "agy": {"prompt": lambda spec, worker, plan, body: panel_prompt(spec, worker, plan, body, "agy"),
             "command": lambda child, adapter, worker, timeout: agy_command(
@@ -1482,12 +1798,20 @@ PROVIDER_ADAPTERS = {
             "calls": agy_stream_calls,
             "panel_audit": lambda stdout, profile, session, kind, repo:
                 _agy_panel_audit(stdout, profile, session, kind),
-            "review_prompt": _agy_review_prompt,
+            "review_prompt": lambda repo: _agy_review_prompt(),
             "review_command": lambda mode, child, model, effort, session, disable, mcp_off, timeout:
                 agy_command(mode, child, model, effort, session, timeout),
             "review_parse": _agy_review_parse,
-            "review_audit": _agy_review_audit,
+            "review_env": lambda ctx: agy_env(ctx["profile"]),
+            "review_audit": lambda ctx: {"denied_attempts": _agy_review_audit(ctx["run_dir"], ctx["profile"])},
             "verify": lambda claims, calls, kind, repo: verify_claims(claims, calls, kind, repo, "agy")},
+    # Review/inspect only: no panel hooks, so a DeepSeek panel worker cannot be dispatched.
+    "deepseek": {"review_prompt": _dsh_review_prompt,
+                 "review_command": lambda mode, child, model, effort, session, disable, mcp_off, timeout:
+                     dsh_command(mode, child, model, session),
+                 "review_parse": _dsh_review_parse,
+                 "review_env": lambda ctx: dsh_env(),
+                 "review_audit": _dsh_review_audit},
 }
 
 
@@ -1776,9 +2100,11 @@ def run(args) -> int:
     repo = Path(args.repo).resolve(strict=True)
     plan = Path(args.plan)
     plan = (repo / plan).resolve(strict=True) if not plan.is_absolute() else plan.resolve(strict=True)
+    # Only an explicit DeepSeek inspector overrides the role; --provider BUILDER stays a fallback launch.
     roles = resolve_roles(args.host,
                           reviewer=args.provider if args.mode == "review" and args.provider != args.host else None,
-                          builder=args.builder)
+                          builder=args.builder,
+                          inspector="deepseek" if args.mode == "inspect" and args.provider == "deepseek" else None)
     if args.mode == "panel":
         return run_panel(args, repo, plan, roles)
     provider = args.provider or (roles["builder"] if args.mode == "build" else
@@ -1787,6 +2113,16 @@ def run(args) -> int:
         raise RunError("agy is available only for plan-body review and web panel workers.")
     if provider == "agy" and args.fallback_from:
         raise RunError("agy has no same-provider fallback path.")
+    if provider == "deepseek":
+        if args.mode not in ("review", "inspect"):
+            raise RunError("DeepSeek is available only for plan review and code inspection.")
+        if sys.platform == "win32":
+            raise RunError("DeepSeek review is not validated on Windows.")
+        if args.fallback_from:
+            raise RunError("DeepSeek has no same-provider fallback; rerun with the default "
+                           f"{'reviewer' if args.mode == 'review' else 'inspector'} instead.")
+        if args.effort:
+            raise RunError("--effort has no verified DeepSeek mapping; omit it.")
     fallback = (validate_fallback(Path(args.fallback_from), repo, plan, provider,
                                   args.mode, roles, args.base, bool(args.resume))
                 if args.fallback_from else None)
@@ -1804,7 +2140,7 @@ def run(args) -> int:
         if not args.approval:
             raise RunError("check requires --approval result.json.")
         approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
-        check_approval(approval, plan, repo)
+        check_approval(approval, plan, repo, args.host)
         print(f"Approval matches the current plan; assurance={approval.get('assurance', 'legacy_unspecified')}.")
         return 0
     if args.mode == "inspect" and (not args.base or args.resume):
@@ -1816,7 +2152,8 @@ def run(args) -> int:
     if provider == "agy":
         require_agy_artifacts(args)
     previous = (previous_record(Path(args.resume), repo, plan, provider, args.mode,
-                                requested_model, requested_effort) if args.resume else None)
+                                requested_model, requested_effort, roles) if args.resume else None)
+    fingerprint = dsh_fingerprint(repo) if provider == "deepseek" else None
     before = snapshot(repo, args.base) if args.mode == "inspect" else None
     approval_assurance = None
     if args.mode == "build":
@@ -1828,7 +2165,7 @@ def run(args) -> int:
             raise RunError("Checkout changed since the previous build. Inspect intervening work before continuing.")
         if args.approval:
             approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
-            check_approval(approval, plan, repo)
+            check_approval(approval, plan, repo, args.host)
             approval_assurance = approval.get("assurance", "legacy_unspecified")
         elif not args.unreviewed_spec:
             raise RunError("Supply --approval, or explicitly --unreviewed-spec for a standalone work order.")
@@ -1855,7 +2192,7 @@ def run(args) -> int:
         )
     save(run_dir / "result.json", record)
     save(run_dir / "schema.json", REVIEW_SCHEMA)
-    instructions = PROVIDER_ADAPTERS[provider]["review_prompt"]() if args.mode != "build" else (
+    instructions = PROVIDER_ADAPTERS[provider]["review_prompt"](repo) if args.mode != "build" else (
         "Implement the attached frozen work order within this checkout. Do not commit, push or publish. "
         "Resolve source paths relative to this checkout; never edit an original checkout named in the plan. "
         "Do not silently redesign an impossible requirement: report it and the proposed deviation. "
@@ -1908,6 +2245,12 @@ def run(args) -> int:
             if version.returncode or not version.stdout.strip():
                 raise RunError("CLI version probe failed. Check the resolved executable before retrying.")
             record["cli_version"] = version.stdout.decode("utf-8", errors="replace").strip()
+            if provider == "deepseek":
+                record.update(cli_validated=record["cli_version"] in VALIDATED_DSH_CLI,
+                              allow_unvalidated_cli=bool(args.allow_unvalidated_cli))
+                if not record["cli_validated"] and not args.allow_unvalidated_cli:
+                    raise RunError(f"dsh {record['cli_version']} is not validated; pass "
+                                   "--allow-unvalidated-cli to record the override.")
         record["executable"] = prefix
         disable, mcp_off = [], []
         if provider == "codex" and args.mode in ("review", "inspect"):
@@ -1921,19 +2264,28 @@ def run(args) -> int:
             argv = prefix + PROVIDER_ADAPTERS[provider]["review_command"](
                 args.mode, run_dir, requested_model, requested_effort,
                 previous["session_id"] if previous else None, disable, mcp_off, args.timeout)
+        if provider == "deepseek":
+            record["dsh_enabled_entries"] = dsh_check_config(prefix, run_dir, repo, dsh_env())
         save(run_dir / "command.json", argv)
         print(json.dumps({"provider": provider, "model": requested_model or "CLI default (unresolved)",
                           "mode": args.mode, "artifacts": str(run_dir)}), flush=True)
+        hook_ctx = {"run_dir": run_dir, "repo": repo, "plan": plan, "fingerprint": fingerprint,
+                    "profile": profile if provider == "agy" else None}
         try:
             code = execute(argv, agy_input(prompt) if provider == "agy" else prompt,
                            agy_working_dir if provider == "agy" else repo, run_dir, args.timeout,
-                           env=agy_env(profile) if provider == "agy" else None)
+                           env=PROVIDER_ADAPTERS[provider]["review_env"](hook_ctx) if args.mode != "build" else None)
         finally:
+            # Runs on every exit path; a violation replaces any in-flight error so it can never
+            # surface as provider_unavailable.
             if args.mode != "build":
-                denied = PROVIDER_ADAPTERS[provider]["review_audit"](
-                    run_dir, profile if provider == "agy" else None)
-                if provider == "agy":
-                    record["denied_attempts"] = denied
+                audit = PROVIDER_ADAPTERS[provider]["review_audit"](hook_ctx)
+                record.update(audit)
+                if audit.get("confinement_violation"):
+                    raise ConfinementViolation("Reviewer used a disallowed tool, read outside the repository, "
+                                               "or changed the working tree; no verdict is accepted.")
+                if audit.get("patch_error"):
+                    raise RunError("dsh did not apply the lockdown patch cleanly; see stderr.txt.")
         record["exit_code"] = code
         if code:
             raise RunError(f"{provider} exited {code}; inspect stdout.txt and stderr.txt.")
@@ -1963,7 +2315,8 @@ def run(args) -> int:
             record["snapshot"] = snapshot(repo, args.base)
         record["status"] = "completed"
     except (RunError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
-        failure_kind, eligible = classify_failure(str(exc), run_dir, provider)
+        failure_kind, eligible = (("confinement_violation", False) if isinstance(exc, ConfinementViolation)
+                                  else classify_failure(str(exc), run_dir, provider))
         record.update(status="failed", error=str(exc), failure_kind=failure_kind,
                       fallback_eligible=eligible)
     record["elapsed_seconds"] = round(time.time() - record["started_at"], 2)
@@ -2004,7 +2357,8 @@ def main(argv=None) -> int:
                         help="Panel: print launches, budgets, exact web-worker prompts and payload_sha256.")
     parser.add_argument("--payload-sha256", help="Panel: payload_sha256 from the dry run the user approved.")
     parser.add_argument("--allow-unvalidated-cli", action="store_true",
-                        help="Panel: allow repo workers on a Claude CLI without a recorded canary (recorded).")
+                        help="Allow a CLI version without a recorded canary (Claude panel repo workers, "
+                             "agy, dsh); the override is recorded.")
     args = parser.parse_args(argv)
     try:
         if args.mode == "agy-profile":
@@ -2014,6 +2368,8 @@ def main(argv=None) -> int:
             raise RunError("--host is required for this mode.")
         if args.provider == "agy" and args.mode not in ("review", "panel", "roles"):
             raise RunError("agy is available only for review and panel modes.")
+        if args.provider == "deepseek" and args.mode not in ("review", "inspect", "check", "roles"):
+            raise RunError("DeepSeek is available only for review and inspect modes.")
         if args.timeout < 1:
             raise RunError("Timeout must be positive.")
         if args.mode == "roles":

@@ -120,3 +120,78 @@ These material changes need another review:
 - **After approval:** only the "Codex plan review" checkbox was ticked. That changes the file sha, so `check` must be run against the approved revision (`git show` or this log) before a build. The change is one checkbox line.
 - **Totals for 3 rounds:** about 6.55M input tokens (about 6.05M cached), about 35k output tokens.
 - **Implementation:** not authorized.
+
+## Build (2026-10-14)
+
+- **Authorization:** the user authorized implementation on 2026-10-14 ("授权实现 DeepSeek"; "claude先build，等codex额度好了就审阅").
+- **Roles:** builder Claude (host). Inspector: a fresh Codex session, deferred because Codex quota is exhausted. No inspection has covered this build yet.
+- **Prerequisite done:** PR #2 merged (`bab2add`), with the agy live `retrieved` item marked N/A by user decision. Branch `feat/deepseek-reviewer` from `f4ccc85`; adapter hook signatures re-read.
+- **Implementation:**
+  - `deepseek` adapter: patch writer, command, env, prompt, parse, audit;
+  - `review_env(ctx)`/`review_audit(ctx)`/`review_prompt(repo)` hooks on every adapter, with `agy_env` moved into agy's hook;
+  - an `inspector` role, `valid_session`, and role binding in `previous_record`/`check_approval`;
+  - `ConfinementViolation`, which overrides `classify_failure`;
+  - the dsh failure-diagnostic branch, plus markers, refusals and the version gate;
+  - SKILL.md, runtime.md, AGENTS.md and README; manifests bumped to 2.3.0.
+- **Deviation:** the Windows guard is `sys.platform == "win32"` rather than `os.name == "nt"`, because patching `os.name` in tests breaks pathlib. Behaviour is the same.
+- **Proof:**
+  - `scripts/validate.py` OK; 107 tests OK (1 skipped); `git diff --check` clean;
+  - 93 pre-existing tests pass unmodified;
+  - mutation checks: removing any one of the violation override, `tool_result` correlation, the working-tree fingerprint, the truncation check, the glob `..` check or the patch-warning check makes a test fail.
+- **Open:**
+  - CI;
+  - live review and inspection (no DeepSeek API key: `DEEPSEEK_API_KEY` unset);
+  - `VALIDATED_DSH_CLI` (empty until the canary passes, so live runs need `--allow-unvalidated-cli`);
+  - fresh Codex inspection.
+
+## Live validation (2026-10-15)
+
+- **Key:** read from `~/.deepseek/config.toml` (`api_key`) into the child's `DEEPSEEK_API_KEY` by the host shell; never printed, and the runner never touched it.
+- **Runs:** live review, inspection and resume in a disposable seeded-defect repo all completed cleanly; each found the seeded defect, and the audits were clean. Details are in VALIDATION.md.
+- **Result:** `VALIDATED_DSH_CLI = ("0.2.0-rc.2",)`.
+
+## Inspection round 1 — fresh Codex — REVISE (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect1/claudex-kotmmn5j/result.json`, base `f4ccc85`, builder Claude.
+- **Usage:** 3,533,164 input tokens (3,315,200 cached), 13,369 output tokens.
+- **Findings and dispositions:** all six accepted.
+  - DSI-01 (high): profile and home patch layers load before the runner's overlay and could add hook plugins that are invisible to the audit. Fix: a `--dump-config` preflight refuses any non-vendor layer and any enabled entry outside a 60-id allowlist taken from real dsh 0.2.0-rc.2.
+  - DSI-02 (medium): the grep `include` filter was treated as unauditable. Fix: allowed as a string.
+  - DSI-03 (medium): a post-run fingerprint failure dropped the violation evidence and was classified as availability. Fix: caught, and recorded as unauditable.
+  - DSI-04 (medium): a torn JSON line was silently ignored. Fix: every non-object line is unauditable.
+  - DSI-05 (low): SKILL.md still said every third-party approval is advisory. Fix: carve-out for a runner-validated DeepSeek review.
+  - DSI-06 (low): the display-name model aliases were missing. Fix: documented in SKILL.md.
+- **Proof:**
+  - full suite OK, validate OK;
+  - mutation checks: removing the layer check, the allowlist, the torn-line check or the fingerprint catch each makes a test fail;
+  - a live run on real dsh with `deepseek-v4-pro` and no override flag passed the preflight with 60 entries, audited 6 calls cleanly and returned REVISE on the seeded bug.
+- **Next:** a fresh Codex re-inspection of `f4ccc85..HEAD`.
+
+## Inspection round 2 — fresh Codex — REVISE (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect2/claudex-dusebin6/result.json`.
+- **Usage:** 1,940,309 input tokens (1,787,264 cached), 7,753 output tokens.
+- **DSI-07 (medium), accepted:** DeepSeek SERVER (5xx) and RATE_LIMIT (429) failures matched no marker, so they were not fallback-eligible.
+  - Fix: the diagnostic now reads dsh's documented stable codes (from the dsh-llm-deepseek README) from stderr `dsh: CODE:` lines and from `error`/`turn_end` events.
+  - Unavailable codes: AUTH, QUOTA, RATE_LIMIT, SERVER, TRANSPORT, TIMEOUT, MISSING_CREDENTIAL, INVALID_CREDENTIAL, HTTP_402, HTTP_429 and HTTP_5xx. INVALID_REQUEST stays ineligible.
+  - Tests cover SERVER, RATE_LIMIT, INVALID_REQUEST and the exit-0 failed turn. The mutation check fails 3 tests. Full suite OK.
+
+## Inspection round 3 — fresh Codex — REVISE (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect3/claudex-lxpw4_9l/result.json`.
+- **Usage:** 2,121,569 input tokens (1,928,064 cached), 8,897 output tokens.
+- **DSI-08 (medium), accepted:** the audit could crash on a tracked symlink loop (`resolve()` raises RuntimeError) or on a non-string `tool_result.callId` (TypeError), leaving `result.json` at `running`. Two layers of fix:
+  - path-resolution errors make the path fail the check, and `callId` must be a string;
+  - any exception in the audit is recorded as unauditable evidence, which gives `confinement_violation`.
+  - Regression tests cover both cases. Mutation checks, with the outer catch removed, fail each test. Full suite OK.
+
+## Inspection round 4 — fresh Codex — APPROVED (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect4/claudex-wjjy_lus/result.json`, `assurance=cross_provider`, covering all 12 changed files at `2ad677a`.
+- **Usage:** 2,203,879 input tokens (2,045,056 cached), 6,514 output tokens.
+- **Limitations (reviewer):**
+  - static review only;
+  - CI and live runs were read as evidence, not rerun;
+  - an outside read is detected only after disclosure.
+- **CI:** green on Linux, macOS and Windows for `2ad677a`.
+- **Totals for the 4 inspection rounds:** about 9.8M input tokens (about 9.1M cached), about 36k output tokens. All code is Claude-authored, and every change after the build was covered by a later fresh Codex round.

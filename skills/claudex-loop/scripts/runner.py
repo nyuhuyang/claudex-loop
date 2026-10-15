@@ -1863,6 +1863,11 @@ def run(args) -> int:
         "Report files changed, proof output, denied/blocked actions, and deviations. "
         "Your report is advisory; another provider will independently review the final changes.\n"
     )
+    if args.mode == "review":
+        instructions += (
+            "Also report, as a low finding, any actionable plan item (progress step, acceptance "
+            "criterion, verification check, sub-step) that is not its own `- [ ]` checkbox.\n"
+        )
     if fallback:
         session_instruction = (
             "You are resuming the same fallback reviewer session. " if previous else

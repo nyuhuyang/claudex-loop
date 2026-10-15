@@ -65,7 +65,11 @@ flowchart LR
 
 The user controls consequential decisions and authorization. A request to review a plan does not authorize implementation. A request to plan and implement does not need redundant build approval. Commits, pushes and publication follow the user's existing instructions.
 
-The plan records what to build; the review log records the findings, dispositions, models, proof and remaining uncertainty. Both default to `docs/exec-plans/active/<date>-<slug>.md` and `docs/exec-plans/active/<date>-<slug>-review-log.md` so a later run cannot overwrite an earlier one, and both paths are configurable. When the work is finished, move both to `docs/exec-plans/completed/`. Detailed CLI diagnostics live in a unique directory outside the target checkout.
+The plan records what to build; the review log records the findings, dispositions, models, proof and remaining uncertainty. Both default to `docs/exec-plans/active/<date>-<slug>.md` and `docs/exec-plans/active/<date>-<slug>.review-log.md` so a later run cannot overwrite an earlier one, and both paths are configurable. The plan is an execution plan in the `exec-plan` format: `status`/`created` frontmatter and a `## Progress Checklist` whose checkboxes are ticked only after each step is verified, so another session can resume from the first unchecked item. The pair moves to `docs/exec-plans/completed/` (with `status: completed`) only when every item is checked or explained. Detailed CLI diagnostics live in a unique directory outside the target checkout.
+
+### With research skill packs
+
+When a research skill pack such as CCFA (`ccf-*`) is installed, Claudex Loop judges during recon whether the project is frontier research work (a paper, publishable experiments, a rebuttal or a submission). If it is, the plan names the research skills each provider uses, copies the applicable evidence and review standards into its acceptance criteria because isolated reviewers do not load user skills, and links its checklist to `ccfa.yaml` gates. Ordinary software work skips this. When the answer is unclear, the interview asks. See [research skills](skills/claudex-loop/references/research-skills.md).
 
 ## Install
 
@@ -119,13 +123,13 @@ The third example starts in Claude Code; the fourth starts in Codex. The host se
 |---|---|---|
 | `mode` | `full` | `review` starts from an existing plan |
 | `plan` / `PLAN_FILE` | `docs/exec-plans/active/<date>-<slug>.md` | Plan path, carried through every phase; a generated default gets a suffix rather than overwriting, while a path you supply is used as given |
-| `log` / `LOG_FILE` | `docs/exec-plans/active/<date>-<slug>-review-log.md` | Append-only decision log, kept beside its plan |
+| `log` / `LOG_FILE` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only decision log, kept beside its plan |
 | `builder` | current host | `claude` or `codex` |
 | `reviewer_model`, `builder_model`, `inspector_model` | each CLI's configuration | Explicit per-role model override |
 | `reviewer_effort`, `builder_effort`, `inspector_effort` | each CLI's configuration | Explicit supported reasoning effort |
-| `rounds` / `MAX_ROUNDS` | `5` | Completed plan-review round cap |
-| `MAX_FIX_ROUNDS` | `2` | Build-fix attempt cap |
-| `MAX_INSPECTION_ROUNDS` | `2` | Initial inspection plus one reinspection |
+| `rounds` / `MAX_ROUNDS` | `20` | Completed plan-review round cap |
+| `MAX_FIX_ROUNDS` | `20` | Build-fix attempt cap |
+| `MAX_INSPECTION_ROUNDS` | `20` | Initial inspection plus fresh reinspections after fixes |
 | `research` | proportionate to task | `none`, `web`, or explicitly authorized `deep` |
 | `inspect` | `on` | `off` is an explicit, logged opt-out |
 | `fallback` | `same-provider-on-unavailable` | Fresh same-provider review after a recorded provider-unavailable failure; `off` disables it |

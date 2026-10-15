@@ -2,7 +2,7 @@
 status: superseded
 created: 2026-09-19
 archived: 2026-09-22
-superseded_by: ../active/2026-09-22-cross-provider-research-panel.md
+superseded_by: 2026-09-22-cross-provider-research-panel.md
 ---
 
 # Review Log: Codex-only and Multi-provider Adversarial Research

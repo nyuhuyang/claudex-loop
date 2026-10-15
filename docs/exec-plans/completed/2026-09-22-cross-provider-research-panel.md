@@ -1,6 +1,7 @@
 ---
-status: in-progress
+status: completed
 created: 2026-09-22
+completed: 2026-10-14
 ---
 
 # Plan: Cross-provider Research Panel (Codex host → Claude workers)
@@ -20,10 +21,10 @@ This plan does not authorize implementation.
 - [x] P1 `panel` mode, Claude workers — commit `f9f0288`; Codex-inspected (2 rounds)
 - [x] P1 live canary (passed, 2.1.280 validated) + Codex-hosted panel run (`partial`; exposed the markdown-matching bug) recorded in `VALIDATION.md`
 - [x] Post-live fixes (StructuredOutput allowance, EPERM tolerance, markdown normalization) — commit `c3682c5`
-- [ ] Optional: second live run to confirm `completed` after the markdown fix
+- [x] Optional: second live run to confirm `completed` after the markdown fix — N/A: optional; skipped by user decision 2026-10-14 (the P2 Codex-worker live run did reach `completed`)
 - [x] Codex MCP lockdown in read-only review/inspection (`--codex-mcp-allow` for exceptions) — commit `cf25059`
 - [x] Branch pushed to fork: https://github.com/nyuhuyang/claudex-loop/tree/fix/fallback-provider-classification
-- [ ] Open PR; archive this plan
+- [x] Open PR; archive this plan — PR #1 merged 2026-09-23 (`91b34b5`); archived 2026-10-14
 - [x] Codex review/inspect hardening (connector features disabled; user MCP caveat documented) — commit `09ff540`
 - [x] P2 reverse direction: Codex web workers (repo workers refused: canary failed); live run `completed` on 0.156.0; Codex-inspected (2 rounds) — commit `990d418`
 

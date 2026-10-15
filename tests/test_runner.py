@@ -232,6 +232,19 @@ if sys.argv[1:] == ['--version']:
     print('9.9.9' if case == 'version' else '0.2.0-rc.2')
     sys.exit(0)
 d = pathlib.Path(os.environ['FAKE_DSH_DIR'])
+if '--dump-config' in sys.argv:
+    if case == 'dump_fail':
+        sys.exit(2)
+    patch_path = sys.argv[sys.argv.index('--patch') + 1]
+    ids = json.loads(os.environ['FAKE_DSH_IDS'])
+    out = ['# == @deepseek-ai/dsh-base'] + ['- id: %s\n  name: x' % i for i in ids]
+    out += ['# == @deepseek-ai/dsh-base, patched by ' + patch_path, '- id: tool-bash\n  name: x\n  disabled: true']
+    if case == 'user_layer':
+        out += ['# == /home/u/.dsh/profiles/headless/cordis.patch.yml', '- id: tool-fs\n  name: x']
+    if case == 'extra_plugin':
+        out += ['# == @deepseek-ai/dsh-hooks', '- id: hooks-claude-code\n  name: x']
+    print('\n'.join(out))
+    sys.exit(0)
 prompt = sys.stdin.read()
 (d / 'argv.json').write_text(json.dumps(sys.argv))
 (d / 'env.json').write_text(json.dumps({k: v for k, v in os.environ.items() if k.startswith('DSH_')}))
@@ -265,6 +278,9 @@ elif case == 'no_input':
     del call['input']
 elif case == 'unmatched_result':
     result['callId'] = 'c9'
+elif case == 'grep_include':
+    call = {'type': 'tool_call', 'callId': 'c1', 'tool': 'grep',
+            'input': {'pattern': 'add', 'path': '.', 'include': '*.py'}}
 elif case == 'big_result':
     result.update(result='x' * 8192, truncated=True)
 if case == 'write':
@@ -291,6 +307,11 @@ if case == 'violation_timeout':
     print(json.dumps({'type': 'tool_call', 'callId': 'c1', 'tool': 'bash', 'input': {'command': 'ls'}}), flush=True)
     import time
     time.sleep(30)
+if case == 'torn_call':
+    print(json.dumps(events[0]))
+    print('{"type":"tool_call","callId":"c1","tool":"read","input":{"file_pa')
+    print('dsh: AUTH: invalid API key', file=sys.stderr)
+    sys.exit(1)
 print('\n'.join(json.dumps(e) for e in events))
 if case in ('auth', 'violation_and_auth'):
     print('dsh: AUTH: invalid API key', file=sys.stderr)
@@ -1846,6 +1867,7 @@ class DeepSeekTests(unittest.TestCase):
         with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.dsh)]), \
              patch.object(runner, "VALIDATED_DSH_CLI", ("0.2.0-rc.2",) if validated else ()), \
              patch.dict(os.environ, {"FAKE_DSH_CASE": case, "FAKE_DSH_DIR": str(self.fake),
+                                     "FAKE_DSH_IDS": json.dumps(sorted(runner.DSH_ENABLED_ALLOWLIST)),
                                      "FAKE_DSH_OUTSIDE": str(self.outside), "FAKE_DSH_PLAN": str(self.plan)}), \
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             code = runner.main(args)
@@ -1927,6 +1949,8 @@ class DeepSeekTests(unittest.TestCase):
                 self.assert_violation(case)
         record = self.assert_violation("violation_and_auth")
         self.assertEqual(record["disallowed_tool_calls"], ["bash"])
+        record = self.assert_violation("torn_call")
+        self.assertTrue(any("not a complete JSON object" in e for e in record["unauditable_tool_events"]))
         code, record, _, _ = self.call(case="violation_timeout", extra=("--timeout", "2"))
         self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("confinement_violation", False))
 
@@ -1939,7 +1963,7 @@ class DeepSeekTests(unittest.TestCase):
         self.assert_violation("index_only")
 
     def test_allowed_reads_pass(self):
-        for case in ("plan_read", "big_result"):
+        for case in ("plan_read", "big_result", "grep_include"):
             with self.subTest(case=case):
                 code, record, _, error = self.call(case=case)
                 self.assertEqual(code, 0, error)
@@ -1974,6 +1998,29 @@ class DeepSeekTests(unittest.TestCase):
         code, record, _, error = self.call(validated=False, extra=("--allow-unvalidated-cli",))
         self.assertEqual(code, 0, error)
         self.assertEqual((record["cli_validated"], record["allow_unvalidated_cli"]), (False, True))
+
+    def test_profile_composition_is_verified_before_launch(self):
+        for case, message in (("user_layer", "non-vendor layer"), ("extra_plugin", "hooks-claude-code"),
+                              ("dump_fail", "--dump-config failed")):
+            with self.subTest(case=case):
+                code, record, _, _ = self.call(case=case)
+                self.assertEqual((code, record["failure_kind"], record["fallback_eligible"]),
+                                 (1, "provider_failure", False))
+                self.assertIn(message, record["error"])
+                self.assertFalse((self.fake / "argv.json").exists())
+
+    def test_fingerprint_failure_keeps_violation_evidence(self):
+        real = runner.dsh_fingerprint
+        calls = []
+        def flaky(repo):
+            calls.append(repo)
+            if len(calls) > 1:
+                raise runner.RunError("git timed out")
+            return real(repo)
+        with patch.object(runner, "dsh_fingerprint", side_effect=flaky):
+            record = self.assert_violation("disallowed")
+        self.assertEqual(record["disallowed_tool_calls"], ["bash"])
+        self.assertTrue(any("working-tree check failed" in e for e in record["unauditable_tool_events"]))
 
     def test_non_git_is_refused(self):
         shutil.rmtree(self.repo / ".git")

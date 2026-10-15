@@ -44,7 +44,24 @@ DSH_DISABLE = (
 )
 # Path-bearing input keys per tool (spike s9); any other key except the numeric read window fails closed.
 DSH_PATH_KEYS = {"read": ("file_path",), "glob": ("path", "pattern"), "grep": ("path",)}
-DSH_OTHER_KEYS = {"read": ("offset", "limit"), "glob": (), "grep": ("pattern",)}
+DSH_OTHER_KEYS = {"read": ("offset", "limit"), "glob": (), "grep": ("pattern", "include")}
+# Entries left enabled in `dsh --profile headless --patch dsh-patch.yml --dump-config` on 0.2.0-rc.2
+# (some are conditionally enabled by a `!!js` expression). Any other enabled entry - a profile or
+# home overlay adding hooks, a replacement tool, filesystem, sandbox or permission plugin - refuses.
+DSH_ENABLED_ALLOWLIST = frozenset((
+    "plugin-manager", "timer", "llm", "deepseek-llm-api-extensions", "session", "session-log-deepseek",
+    "typert", "typert-loader", "typert-gateway", "agent", "plugin-package-inventory-deepseek",
+    "agent-default-model", "llm-retry", "config-editor", "settings", "authorization", "deepseek-account",
+    "credentials", "llm-pi-ai", "session-persistence-jsonl", "attachment-local", "session-query-sqlite",
+    "session-projection", "storage", "storage-json", "storage-domain", "session-projection-cache",
+    "subprocess", "sandbox", "sandbox-policy", "bash-sandbox", "approval", "permission", "shell-env",
+    "fs-observation-policy", "tool-fs", "tool-fs-search", "commands", "command-feedback", "token-meter",
+    "compaction-basic", "command-compact", "subagent", "subagent-spawn-in-process",
+    "subagent-fork-in-process", "timeout-policy", "spill-local", "spill-policy",
+    "session-checkpoint-policy", "tool-result-pruner", "image-offload", "repeat-tool-reminder", "tools",
+    "system-prompt", "agent-loop", "fs-sandbox", "llm-deepseek", "llm-deepseek-account",
+    "headless-startup", "headless-runner",
+))
 VALIDATED_AGY_CLI = ("1.2.9",)
 AGY_MODEL = "gemini-3.1-pro-high"
 AGY_ROLES = ("web", "review")
@@ -1519,6 +1536,38 @@ def dsh_command(mode: str, run_dir: Path, model: str | None, session: str | None
     return args + (["--session-id", session] if session else []) + ["-"]
 
 
+def dsh_check_config(prefix: list[str], run_dir: Path, repo: Path, env: dict) -> int:
+    """Refuse a composed profile with a non-vendor layer or any unexpected enabled plugin.
+
+    The --patch overlay only disables known ids; profile and home layers load before it and could
+    add hooks or replacement tools that never appear as headless tool_call events.
+    """
+    patch = str(run_dir / "dsh-patch.yml")
+    result = subprocess.run(prefix + ["--profile", "headless", "--patch", patch, "--dump-config"],
+                            cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
+    if result.returncode:
+        raise RunError("dsh --dump-config failed; cannot verify the reviewer's plugin composition.")
+    text = result.stdout.decode("utf-8", errors="replace")
+    (run_dir / "dsh-config.txt").write_text(text, encoding="utf-8")
+    for header in re.findall(r"^# == (.+)$", text, re.M):
+        origin, _, patched = header.partition(", patched by ")
+        for source in [origin] + (patched.split(", ") if patched else []):
+            if not (source.startswith("@deepseek-ai/") or source == patch):
+                raise RunError(f"dsh profile has a non-vendor layer ({source}); run DeepSeek reviews "
+                               "with an empty headless profile overlay.")
+    enabled = []
+    for block in re.split(r"^(?=- id: )", text, flags=re.M):
+        entry = re.match(r"- id: (\S+)", block)
+        if entry and not re.search(r"^  disabled: true$", block, re.M):
+            enabled.append(entry.group(1))
+    if not enabled:
+        raise RunError("dsh --dump-config listed no entries; cannot verify the plugin composition.")
+    unexpected = sorted(set(enabled) - DSH_ENABLED_ALLOWLIST)
+    if unexpected:
+        raise RunError(f"dsh profile enables unverified plugins: {', '.join(unexpected)}.")
+    return len(enabled)
+
+
 def dsh_env() -> dict:
     return {**os.environ, "DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
             "DSH_TELEMETRY_MODE": "DISABLED"}
@@ -1592,8 +1641,14 @@ def dsh_audit(stdout: str, repo: Path, plan: Path) -> dict:
     """Audit every tool call dsh reported. Unauditable evidence counts as a violation."""
     disallowed, outside, unauditable, calls = [], [], [], {}
     events = dsh_events(stdout, strict=False)
-    if any(line.strip() and not line.lstrip().startswith("{") for line in stdout.splitlines()):
-        unauditable.append("non-JSON stream line")
+    for number, line in enumerate(stdout.splitlines(), 1):
+        if line.strip():
+            try:
+                ok = isinstance(json.loads(line), dict)
+            except ValueError:
+                ok = False
+            if not ok:
+                unauditable.append(f"stream line {number} is not a complete JSON object")
     for event in events:
         kind = event.get("type")
         if kind == "tool_call":
@@ -1624,7 +1679,8 @@ def dsh_audit(stdout: str, repo: Path, plan: Path) -> dict:
                     if not ok:
                         outside.append(f"{tool}.{key}={value}")
                 elif key not in DSH_OTHER_KEYS[tool] or (
-                        tool == "read" and not (isinstance(value, int) and not isinstance(value, bool))):
+                        tool == "read" and not (isinstance(value, int) and not isinstance(value, bool))) or (
+                        tool == "grep" and not isinstance(value, str)):
                     unauditable.append(f"{tool} argument {key!r} is not in the audit map")
         elif kind == "tool_result":
             # Body truncation is fine: confinement uses the call's input. Correlation is not optional.
@@ -1640,8 +1696,11 @@ def _dsh_review_audit(ctx: dict) -> dict:
     stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
     audit = dsh_audit(stdout, ctx["repo"], ctx["plan"])
-    if dsh_fingerprint(ctx["repo"]) != ctx["fingerprint"]:
-        audit["working_tree_changed"] = True
+    try:
+        if dsh_fingerprint(ctx["repo"]) != ctx["fingerprint"]:
+            audit["working_tree_changed"] = True
+    except (RunError, OSError, subprocess.SubprocessError) as exc:
+        audit["unauditable_tool_events"].append(f"post-run working-tree check failed: {exc}")
     if audit["disallowed_tool_calls"] or audit["read_confinement_violations"] \
             or audit["unauditable_tool_events"] or audit.get("working_tree_changed"):
         audit["confinement_violation"] = True
@@ -2183,6 +2242,8 @@ def run(args) -> int:
             argv = prefix + PROVIDER_ADAPTERS[provider]["review_command"](
                 args.mode, run_dir, requested_model, requested_effort,
                 previous["session_id"] if previous else None, disable, mcp_off, args.timeout)
+        if provider == "deepseek":
+            record["dsh_enabled_entries"] = dsh_check_config(prefix, run_dir, repo, dsh_env())
         save(run_dir / "command.json", argv)
         print(json.dumps({"provider": provider, "model": requested_model or "CLI default (unresolved)",
                           "mode": args.mode, "artifacts": str(run_dir)}), flush=True)

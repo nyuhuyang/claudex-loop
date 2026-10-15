@@ -149,3 +149,20 @@ These material changes need another review:
 - **Key:** read from `~/.deepseek/config.toml` (`api_key`) into the child's `DEEPSEEK_API_KEY` by the host shell; never printed, and the runner never touched it.
 - **Runs:** live review, inspection and resume in a disposable seeded-defect repo all completed cleanly; each found the seeded defect, and the audits were clean. Details are in VALIDATION.md.
 - **Result:** `VALIDATED_DSH_CLI = ("0.2.0-rc.2",)`.
+
+## Inspection round 1 — fresh Codex — REVISE (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect1/claudex-kotmmn5j/result.json`, base `f4ccc85`, builder Claude.
+- **Usage:** 3,533,164 input tokens (3,315,200 cached), 13,369 output tokens.
+- **Findings and dispositions:** all six accepted.
+  - DSI-01 (high): profile and home patch layers load before the runner's overlay and could add hook plugins that are invisible to the audit. Fix: a `--dump-config` preflight refuses any non-vendor layer and any enabled entry outside a 60-id allowlist taken from real dsh 0.2.0-rc.2.
+  - DSI-02 (medium): the grep `include` filter was treated as unauditable. Fix: allowed as a string.
+  - DSI-03 (medium): a post-run fingerprint failure dropped the violation evidence and was classified as availability. Fix: caught, and recorded as unauditable.
+  - DSI-04 (medium): a torn JSON line was silently ignored. Fix: every non-object line is unauditable.
+  - DSI-05 (low): SKILL.md still said every third-party approval is advisory. Fix: carve-out for a runner-validated DeepSeek review.
+  - DSI-06 (low): the display-name model aliases were missing. Fix: documented in SKILL.md.
+- **Proof:**
+  - full suite OK, validate OK;
+  - mutation checks: removing the layer check, the allowlist, the torn-line check or the fingerprint catch each makes a test fail;
+  - a live run on real dsh with `deepseek-v4-pro` and no override flag passed the preflight with 60 entries, audited 6 calls cleanly and returned REVISE on the seeded bug.
+- **Next:** a fresh Codex re-inspection of `f4ccc85..HEAD`.

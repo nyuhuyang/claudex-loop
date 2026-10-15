@@ -184,3 +184,14 @@ These material changes need another review:
   - path-resolution errors make the path fail the check, and `callId` must be a string;
   - any exception in the audit is recorded as unauditable evidence, which gives `confinement_violation`.
   - Regression tests cover both cases. Mutation checks, with the outer catch removed, fail each test. Full suite OK.
+
+## Inspection round 4 — fresh Codex — APPROVED (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect4/claudex-wjjy_lus/result.json`, `assurance=cross_provider`, covering all 12 changed files at `2ad677a`.
+- **Usage:** 2,203,879 input tokens (2,045,056 cached), 6,514 output tokens.
+- **Limitations (reviewer):**
+  - static review only;
+  - CI and live runs were read as evidence, not rerun;
+  - an outside read is detected only after disclosure.
+- **CI:** green on Linux, macOS and Windows for `2ad677a`.
+- **Totals for the 4 inspection rounds:** about 9.8M input tokens (about 9.1M cached), about 36k output tokens. All code is Claude-authored, and every change after the build was covered by a later fresh Codex round.

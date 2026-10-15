@@ -225,6 +225,81 @@ sys.exit(3 if case == 'api_error' else 0)
 '''
 
 
+FAKE_DSH = r"""
+import json, os, pathlib, subprocess, sys
+case = os.environ.get('FAKE_DSH_CASE', 'ok')
+if sys.argv[1:] == ['--version']:
+    print('9.9.9' if case == 'version' else '0.2.0-rc.2')
+    sys.exit(0)
+d = pathlib.Path(os.environ['FAKE_DSH_DIR'])
+prompt = sys.stdin.read()
+(d / 'argv.json').write_text(json.dumps(sys.argv))
+(d / 'env.json').write_text(json.dumps({k: v for k, v in os.environ.items() if k.startswith('DSH_')}))
+(d / 'stdin.txt').write_text(prompt, encoding='utf-8')
+(d / 'cwd.txt').write_text(os.getcwd())
+patch = pathlib.Path(sys.argv[sys.argv.index('--patch') + 1]).read_text()
+(d / 'patch.yml').write_text(patch)
+sid = sys.argv[sys.argv.index('--session-id') + 1] if '--session-id' in sys.argv else \
+    'session-0b5f3c1e-7d2a-4b8e-9f10-2a3b4c5d6e7f'
+if case == 'other_session':
+    sid = 'session-11111111-2222-4333-8444-555555555555'
+good = json.dumps({"verdict": "APPROVED", "summary": "Consistent.", "findings": [],
+                   "coverage": ["plan"], "limitations": []})
+final = {'malformed': 'not json at all', 'final_auth': 'dsh: AUTH: quota exceeded, rate limit',
+         'fenced': '```json\n' + good + '\n```'}.get(case, good)
+call = {'type': 'tool_call', 'callId': 'c1', 'tool': 'read', 'input': {'file_path': 'existing.py'}}
+result = {'type': 'tool_result', 'callId': 'c1', 'status': 'completed', 'result': 'original'}
+if case in ('disallowed', 'violation_and_auth'):
+    call = {'type': 'tool_call', 'callId': 'c1', 'tool': 'bash', 'input': {'command': 'ls'}}
+elif case == 'outside':
+    call['input'] = {'file_path': os.environ['FAKE_DSH_OUTSIDE']}
+elif case == 'plan_read':
+    call['input'] = {'file_path': os.environ['FAKE_DSH_PLAN']}
+elif case == 'glob_escape':
+    call = {'type': 'tool_call', 'callId': 'c1', 'tool': 'glob', 'input': {'pattern': '**/../../*'}}
+elif case == 'escalation':
+    call['input'] = {'file_path': 'existing.py', 'sandbox_permissions': 'workspace-write'}
+elif case == 'truncated_call':
+    call['truncated'] = True
+elif case == 'no_input':
+    del call['input']
+elif case == 'unmatched_result':
+    result['callId'] = 'c9'
+elif case == 'big_result':
+    result.update(result='x' * 8192, truncated=True)
+if case == 'write':
+    (pathlib.Path.cwd() / 'existing.py').write_text('changed\n')
+elif case == 'write_modified':
+    (pathlib.Path.cwd() / 'existing.py').write_text('modified again\n')
+elif case == 'write_untracked':
+    (pathlib.Path.cwd() / 'scratch.txt').write_text('changed untracked\n')
+elif case == 'index_only':
+    subprocess.run(['git', 'add', 'existing.py'], check=True)
+events = [{'type': 'session', 'sessionId': sid, 'cwd': os.getcwd()},
+          {'type': 'status', 'phase': 'turn_start', 'turn': 1}, call, result,
+          {'type': 'status', 'phase': 'step_end', 'turn': 1, 'step': 1,
+           'usage': {'inputTokens': 10, 'outputTokens': 5, 'cacheReadTokens': 3}}]
+if case in ('auth', 'violation_and_auth', 'failed_turn'):
+    events.append({'type': 'status', 'phase': 'turn_end', 'turn': 1, 'reason': {'kind': 'error',
+                   'error': {'message': 'rate limit exceeded' if case == 'failed_turn' else 'bad key',
+                             'code': 'AUTH'}}})
+    events.append({'type': 'final', 'text': ''})
+else:
+    events.append({'type': 'final', 'text': final})
+if case == 'violation_timeout':
+    print(json.dumps(events[0]), flush=True)
+    print(json.dumps({'type': 'tool_call', 'callId': 'c1', 'tool': 'bash', 'input': {'command': 'ls'}}), flush=True)
+    import time
+    time.sleep(30)
+print('\n'.join(json.dumps(e) for e in events))
+if case in ('auth', 'violation_and_auth'):
+    print('dsh: AUTH: invalid API key', file=sys.stderr)
+    sys.exit(1)
+if case == 'patch_warn':
+    print('dsh: warning: 1 entry did not activate', file=sys.stderr)
+"""
+
+
 class RunnerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="claudex-test-")
@@ -1718,3 +1793,215 @@ class AgyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeepSeekWindowsTests(unittest.TestCase):
+    def test_deepseek_is_refused_on_windows(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(runner.sys, "platform", "win32"), \
+                contextlib.redirect_stderr(io.StringIO()) as error:
+            plan = Path(temp) / "plan.md"
+            plan.write_text("# Plan\n", encoding="utf-8")
+            code = runner.main(["review", "--host", "claude", "--provider", "deepseek",
+                                "--repo", temp, "--plan", str(plan)])
+        self.assertEqual(code, 1)
+        self.assertIn("not validated on Windows", error.getvalue())
+
+
+@unittest.skipIf(sys.platform == "win32", "DeepSeek runs are refused on Windows")
+class DeepSeekTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix="claudex-dsh-")
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "repo"
+        self.repo.mkdir()
+        self.plan = self.root / "plan.md"
+        self.plan.write_text("# Plan\nDocument add.\n", encoding="utf-8")
+        self.outside = self.root / "outside.txt"
+        self.outside.write_text("secret\n")
+        self.artifacts = self.root / "runs"
+        self.fake = self.root / "fake"
+        self.fake.mkdir()
+        self.dsh = self.root / "dsh.py"
+        self.dsh.write_text(FAKE_DSH, encoding="utf-8")
+        for args in (("init", "-q"), ("config", "user.email", "t@example.invalid"), ("config", "user.name", "T")):
+            self.git(*args)
+        (self.repo / "existing.py").write_text("original\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "baseline")
+        self.base = self.git("rev-parse", "HEAD").strip()
+
+    def git(self, *args):
+        return subprocess.check_output(["git", *args], cwd=self.repo, stderr=subprocess.PIPE).decode()
+
+    def call(self, mode="review", case="ok", extra=(), provider="deepseek", validated=True, host="claude"):
+        args = [mode, "--host", host, "--repo", str(self.repo), "--plan", str(self.plan),
+                "--artifacts", str(self.artifacts), *extra]
+        if provider:
+            args += ["--provider", provider]
+        if mode == "inspect":
+            args += ["--base", self.base]
+        old = set(self.artifacts.glob("*/result.json")) if self.artifacts.exists() else set()
+        output, error = io.StringIO(), io.StringIO()
+        with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.dsh)]), \
+             patch.object(runner, "VALIDATED_DSH_CLI", ("0.2.0-rc.2",) if validated else ()), \
+             patch.dict(os.environ, {"FAKE_DSH_CASE": case, "FAKE_DSH_DIR": str(self.fake),
+                                     "FAKE_DSH_OUTSIDE": str(self.outside), "FAKE_DSH_PLAN": str(self.plan)}), \
+             contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
+            code = runner.main(args)
+        new = set(self.artifacts.glob("*/result.json")) - old if self.artifacts.exists() else set()
+        path = next(iter(new)) if new else None
+        return code, json.loads(path.read_text()) if path else None, path, error.getvalue()
+
+    def assert_violation(self, case):
+        code, record, _, error = self.call(case=case)
+        self.assertEqual(code, 1, error)
+        self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("confinement_violation", False))
+        self.assertNotIn("response", record)
+        return record
+
+    def test_review_and_inspection_succeed_with_lockdown(self):
+        code, record, _, error = self.call()
+        self.assertEqual(code, 0, error)
+        self.assertEqual((record["provider"], record["assurance"]), ("deepseek", "cross_provider"))
+        self.assertEqual(record["roles"]["reviewer"], "deepseek")
+        self.assertEqual(record["tool_calls_audited"], 1)
+        self.assertEqual(record["usage"], {"input_tokens": 10, "output_tokens": 5, "cached_input_tokens": 3})
+        argv = json.loads((self.fake / "argv.json").read_text())
+        self.assertEqual(argv[1:4], ["--profile", "headless", "--patch"])
+        self.assertEqual(argv[-2:], ["--json", "-"])
+        self.assertEqual(json.loads((self.fake / "env.json").read_text()),
+                         {"DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
+                          "DSH_TELEMETRY_MODE": "DISABLED"})
+        patch_text = (self.fake / "patch.yml").read_text()
+        self.assertEqual(patch_text.count("disabled: true"), len(runner.DSH_DISABLE))
+        self.assertNotIn("bash-sandbox", patch_text.replace("pwsh-sandbox", ""))
+        self.assertNotIn("agent-default-model", patch_text)
+        self.assertEqual(Path((self.fake / "cwd.txt").read_text()).resolve(), self.repo)
+        stdin = (self.fake / "stdin.txt").read_text()
+        self.assertIn(f"Your repository root is {self.repo}", stdin)
+        self.assertIn('"verdict"', stdin)
+        code, record, _, error = self.call(host="codex")
+        self.assertEqual(code, 0, error)
+        self.assertEqual((record["roles"]["host"], record["roles"]["reviewer"]), ("codex", "deepseek"))
+        code, record, _, error = self.call(mode="inspect")
+        self.assertEqual(code, 0, error)
+        self.assertEqual((record["roles"]["inspector"], record["provider"]), ("deepseek", "deepseek"))
+        self.assertIsNotNone(record["snapshot"])
+
+    def test_resume_matching_session_and_refuse_a_different_one(self):
+        code, first, path, error = self.call()
+        self.assertEqual(code, 0, error)
+        code, record, _, error = self.call(extra=("--resume", str(path)))
+        self.assertEqual(code, 0, error)
+        argv = json.loads((self.fake / "argv.json").read_text())
+        self.assertEqual(argv[-3:], ["--session-id", first["session_id"], "-"])
+        code, record, _, _ = self.call(case="other_session", extra=("--resume", str(path)))
+        self.assertEqual(code, 1)
+        self.assertIn("different session", record["error"])
+
+    def test_resume_refuses_changed_roles(self):
+        code, _, path, error = self.call()
+        self.assertEqual(code, 0, error)
+        for extra, host in ((("--builder", "codex"), "claude"), ((), "codex")):
+            with self.subTest(host=host, extra=extra):
+                code, _, _, error = self.call(extra=("--resume", str(path), *extra), host=host)
+                self.assertEqual(code, 1)
+                self.assertIn("roles", error)
+
+    def test_malformed_and_fenced_final(self):
+        code, record, path, _ = self.call(case="malformed")
+        self.assertEqual((code, record["failure_kind"], record["fallback_eligible"]), (1, "provider_failure", False))
+        code, _, _, error = self.call(extra=("--resume", str(path)))
+        self.assertEqual(code, 1)
+        self.assertIn("status", error)
+        code, record, _, error = self.call(case="fenced")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(record["response"]["verdict"], "APPROVED")
+
+    def test_confinement_violations(self):
+        for case in ("disallowed", "outside", "glob_escape", "escalation", "truncated_call", "no_input",
+                     "unmatched_result", "write"):
+            with self.subTest(case=case):
+                self.git("checkout", "-q", "--", ".")
+                self.assert_violation(case)
+        record = self.assert_violation("violation_and_auth")
+        self.assertEqual(record["disallowed_tool_calls"], ["bash"])
+        code, record, _, _ = self.call(case="violation_timeout", extra=("--timeout", "2"))
+        self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("confinement_violation", False))
+
+    def test_change_to_already_dirty_files_or_index_is_detected(self):
+        (self.repo / "existing.py").write_text("dirty before review\n")
+        self.assertTrue(self.assert_violation("write_modified")["working_tree_changed"])
+        (self.repo / "scratch.txt").write_text("untracked before review\n")
+        self.assert_violation("write_untracked")
+        (self.repo / "existing.py").write_text("dirty before review\n")
+        self.assert_violation("index_only")
+
+    def test_allowed_reads_pass(self):
+        for case in ("plan_read", "big_result"):
+            with self.subTest(case=case):
+                code, record, _, error = self.call(case=case)
+                self.assertEqual(code, 0, error)
+
+    def test_failure_classification(self):
+        code, record, _, _ = self.call(case="auth")
+        self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("provider_unavailable", True))
+        code, record, _, _ = self.call(case="final_auth")
+        self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("provider_failure", False))
+        code, record, _, _ = self.call(case="failed_turn")
+        self.assertIn("reported a failed turn", record["error"])
+        self.assertEqual(record["failure_kind"], "provider_unavailable")
+        code, record, _, _ = self.call(case="patch_warn")
+        self.assertEqual((code, record["failure_kind"]), (1, "provider_failure"))
+        self.assertIn("lockdown patch", record["error"])
+
+    def test_refusals(self):
+        code, failed, path, _ = self.call(case="auth")
+        for mode, extra, provider, message in (
+                ("review", ("--fallback-from", str(path)), "deepseek", "no same-provider fallback"),
+                ("review", ("--fallback-from", str(path)), "claude", "default reviewer"),
+                ("review", ("--effort", "high"), "deepseek", "--effort"),
+                ("build", (), "deepseek", "review and inspect"),
+                ("panel", (), "deepseek", "review and inspect")):
+            with self.subTest(mode=mode, provider=provider):
+                code, _, _, error = self.call(mode=mode, extra=extra, provider=provider)
+                self.assertEqual(code, 1)
+                self.assertIn(message, error)
+        code, record, _, error = self.call(validated=False)
+        self.assertEqual(code, 1)
+        self.assertIn("not validated", record["error"])
+        code, record, _, error = self.call(validated=False, extra=("--allow-unvalidated-cli",))
+        self.assertEqual(code, 0, error)
+        self.assertEqual((record["cli_validated"], record["allow_unvalidated_cli"]), (False, True))
+
+    def test_non_git_is_refused(self):
+        shutil.rmtree(self.repo / ".git")
+        code, record, _, error = self.call()
+        self.assertEqual(code, 1)
+        self.assertIn("git repository", error)
+
+    def test_model_patch_and_roles(self):
+        code, record, _, error = self.call(extra=("--model", "deepseek-v4-pro"))
+        self.assertEqual(code, 0, error)
+        self.assertIn("model: deepseek-v4-pro", (self.fake / "patch.yml").read_text())
+        code, _, _, error = self.call(extra=("--model", "x\n- id: tool-bash"))
+        self.assertEqual(code, 1)
+        self.assertEqual(runner.resolve_roles("claude", "deepseek")["reviewer"], "deepseek")
+        self.assertEqual(runner.resolve_roles("claude", inspector="deepseek")["inspector"], "deepseek")
+        with self.assertRaises(runner.RunError):
+            runner.resolve_roles("claude", builder="codex", inspector="codex")
+        with self.assertRaises(runner.RunError):
+            runner.resolve_roles("deepseek")
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(runner.main(["roles", "--host", "claude", "--provider", "deepseek"]), 0)
+        self.assertEqual(json.loads(output.getvalue())["reviewer"], "deepseek")
+        self.assertIsNone(runner.PROVIDER_ADAPTERS["claude"]["review_env"]({}))
+        self.assertIsNone(runner.PROVIDER_ADAPTERS["codex"]["review_env"]({}))
+
+    def test_approval_bound_to_host(self):
+        code, record, path, error = self.call()
+        self.assertEqual(code, 0, error)
+        runner.check_approval(record, self.plan, self.repo, "claude")
+        with self.assertRaises(runner.RunError):
+            runner.check_approval(record, self.plan, self.repo, "codex")

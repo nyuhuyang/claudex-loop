@@ -120,3 +120,26 @@ These material changes need another review:
 - **After approval:** only the "Codex plan review" checkbox was ticked. That changes the file sha, so `check` must be run against the approved revision (`git show` or this log) before a build. The change is one checkbox line.
 - **Totals for 3 rounds:** about 6.55M input tokens (about 6.05M cached), about 35k output tokens.
 - **Implementation:** not authorized.
+
+## Build (2026-10-14)
+
+- **Authorization:** the user authorized implementation on 2026-10-14 ("授权实现 DeepSeek"; "claude先build，等codex额度好了就审阅").
+- **Roles:** builder Claude (host). Inspector: a fresh Codex session, deferred because Codex quota is exhausted. No inspection has covered this build yet.
+- **Prerequisite done:** PR #2 merged (`bab2add`), with the agy live `retrieved` item marked N/A by user decision. Branch `feat/deepseek-reviewer` from `f4ccc85`; adapter hook signatures re-read.
+- **Implementation:**
+  - `deepseek` adapter: patch writer, command, env, prompt, parse, audit;
+  - `review_env(ctx)`/`review_audit(ctx)`/`review_prompt(repo)` hooks on every adapter, with `agy_env` moved into agy's hook;
+  - an `inspector` role, `valid_session`, and role binding in `previous_record`/`check_approval`;
+  - `ConfinementViolation`, which overrides `classify_failure`;
+  - the dsh failure-diagnostic branch, plus markers, refusals and the version gate;
+  - SKILL.md, runtime.md, AGENTS.md and README; manifests bumped to 2.3.0.
+- **Deviation:** the Windows guard is `sys.platform == "win32"` rather than `os.name == "nt"`, because patching `os.name` in tests breaks pathlib. Behaviour is the same.
+- **Proof:**
+  - `scripts/validate.py` OK; 107 tests OK (1 skipped); `git diff --check` clean;
+  - 93 pre-existing tests pass unmodified;
+  - mutation checks: removing any one of the violation override, `tool_result` correlation, the working-tree fingerprint, the truncation check, the glob `..` check or the patch-warning check makes a test fail.
+- **Open:**
+  - CI;
+  - live review and inspection (no DeepSeek API key: `DEEPSEEK_API_KEY` unset);
+  - `VALIDATED_DSH_CLI` (empty until the canary passes, so live runs need `--allow-unvalidated-cli`);
+  - fresh Codex inspection.

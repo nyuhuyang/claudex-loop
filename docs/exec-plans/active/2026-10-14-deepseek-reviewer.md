@@ -13,20 +13,20 @@ Let a Claude- or Codex-hosted Claudex Loop use DeepSeek as the plan reviewer (`r
 
 ## Acceptance Criteria
 
-- [ ] `runner.py review --host claude --provider deepseek ...` runs one dsh turn and writes `result.json` with `provider: deepseek`, `assurance: cross_provider` and a response that passes `validate_review`.
-- [ ] `runner.py review --host codex --provider deepseek ...` does the same.
-- [ ] `runner.py inspect --host claude --provider deepseek --base X ...` does the same for inspection, with the existing snapshot checks, and records `roles.inspector: deepseek`.
-- [ ] `--resume PREVIOUS_RESULT` continues the same dsh session. A different returned session id is refused.
-- [ ] A dsh tool call outside the allowlist `read`, `glob`, `grep` fails the run, and no verdict is accepted.
-- [ ] A read path outside the repository (other than the plan file) fails the run, and no verdict is accepted.
-- [ ] A working-tree change during a review fails the run, and no verdict is accepted.
-- [ ] An authentication, balance, rate-limit or service failure is recorded as `failure_kind=provider_unavailable`.
-- [ ] After that failure the skill reruns without `--provider deepseek`, using the default reviewer or the default non-builder inspector. No degraded same-provider fallback runs.
-- [ ] Without `--provider deepseek`, behaviour is unchanged and every existing test passes unmodified.
+- [x] `runner.py review --host claude --provider deepseek ...` runs one dsh turn and writes `result.json` with `provider: deepseek`, `assurance: cross_provider` and a response that passes `validate_review`. — fake dsh (`test_review_and_inspection_succeed_with_lockdown`); live run pending below
+- [x] `runner.py review --host codex --provider deepseek ...` does the same. — fake dsh
+- [x] `runner.py inspect --host claude --provider deepseek --base X ...` does the same for inspection, with the existing snapshot checks, and records `roles.inspector: deepseek`. — fake dsh
+- [x] `--resume PREVIOUS_RESULT` continues the same dsh session. A different returned session id is refused.
+- [x] A dsh tool call outside the allowlist `read`, `glob`, `grep` fails the run, and no verdict is accepted.
+- [x] A read path outside the repository (other than the plan file) fails the run, and no verdict is accepted.
+- [x] A working-tree change during a review fails the run, and no verdict is accepted.
+- [x] An authentication, balance, rate-limit or service failure is recorded as `failure_kind=provider_unavailable`.
+- [x] After that failure the skill reruns without `--provider deepseek`, using the default reviewer or the default non-builder inspector. No degraded same-provider fallback runs. — skill rule in SKILL.md; runner refuses DeepSeek fallback
+- [x] Without `--provider deepseek`, behaviour is unchanged and every existing test passes unmodified. — 93 pre-existing tests pass unmodified
 - [ ] `python scripts/validate.py` passes on Linux, macOS and Windows CI.
 - [ ] `python -m unittest discover -s tests -v` passes on Linux, macOS and Windows CI.
-- [ ] One live DeepSeek review is recorded in `VALIDATION.md`.
-- [ ] One live DeepSeek inspection is recorded in `VALIDATION.md`.
+- [ ] One live DeepSeek review is recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet (`DEEPSEEK_API_KEY` unset; store one with `dsh web` or export it)
+- [ ] One live DeepSeek inspection is recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
 
 ## Non-goals
 
@@ -200,54 +200,54 @@ Sources: `dsh --profile headless --help`, `dsh --profile headless --dump-config`
 
 ### Automated (fake `dsh`, no quota)
 
-- [ ] `python scripts/validate.py` passes.
-- [ ] `python -m unittest discover -s tests -v`: every existing test passes unmodified, and every new test below passes.
-- [ ] A successful review returns `provider: deepseek`, `assurance: cross_provider` and a valid response.
-- [ ] A successful inspection records `roles.inspector: deepseek` and keeps the snapshot checks.
-- [ ] Resume with a matching session id succeeds and passes `--session-id` before `-`.
-- [ ] Resume where dsh returns a different session id is refused.
-- [ ] A malformed `final` fails as `provider_failure`, not fallback-eligible.
-- [ ] A `final` wrapped in a JSON code fence parses.
-- [ ] A non-allowlisted tool call gives `confinement_violation`.
-- [ ] An outside-repo read gives `confinement_violation`.
-- [ ] A working-tree change during a review gives `confinement_violation`.
-- [ ] A content change to a file that was already modified before the review gives `confinement_violation`.
-- [ ] A content change to a file that was already untracked before the review gives `confinement_violation`.
-- [ ] An index-only change (`git add`) during a review gives `confinement_violation`.
-- [ ] A `tool_call` marked `truncated` gives `confinement_violation`.
-- [ ] A `tool_call` without `input` gives `confinement_violation`.
-- [ ] A confinement violation on a run that also exits non-zero, times out or carries `dsh: AUTH:` still gives `confinement_violation`, never `provider_unavailable`.
-- [ ] `dsh: AUTH:` on stderr gives `provider_unavailable`.
-- [ ] Auth-like text inside `final` does not give `provider_unavailable`.
-- [ ] stderr with `patch: entry` or `did not activate` fails the run.
-- [ ] `--fallback-from` with a DeepSeek source is refused with the mode-specific message.
-- [ ] `--fallback-from` while launching DeepSeek is refused.
-- [ ] `--effort` with DeepSeek is refused.
-- [ ] DeepSeek with `build` or `panel` is refused.
-- [ ] DeepSeek with `os.name == "nt"` is refused.
-- [ ] A DeepSeek review in a non-git directory is refused.
-- [ ] Same-provider inspection fallback (`--provider BUILDER --fallback-from ...`) still passes the existing test unchanged.
-- [ ] Resume with a changed `--host` or `--builder` is refused.
-- [ ] `check` and `build` refuse an approval whose `roles.host` differs from the current host.
-- [ ] agy review still runs with `agy_env(profile)` through its `review_env` hook (the existing agy tests pass unmodified).
-- [ ] A malformed DeepSeek result cannot be used with `--resume`.
-- [ ] A successful review whose allowed `read` returns a `tool_result` body over 8 KiB (marked `truncated`) is accepted.
-- [ ] A `tool_result` with a missing or unmatched `callId` gives `confinement_violation`.
-- [ ] An unvalidated dsh version is refused without `--allow-unvalidated-cli` and recorded with it.
-- [ ] The `dsh-patch.yml` contents equal the Decision 3(b) list, plus `agent-default-model` when `--model` is given.
-- [ ] The child env contains `DSH_PERMISSION_MODE=read-only`, `DSH_TOOLS_MODE=native` and `DSH_TELEMETRY_MODE=DISABLED`.
-- [ ] Claude and Codex runs still get `env=None` from their `review_env` hooks.
-- [ ] A reviewer equal to the host is refused.
-- [ ] An inspector equal to the builder is refused.
-- [ ] `roles` output shows `deepseek` when requested.
+- [x] `python scripts/validate.py` passes.
+- [x] `python -m unittest discover -s tests -v`: every existing test passes unmodified, and every new test below passes.
+- [x] A successful review returns `provider: deepseek`, `assurance: cross_provider` and a valid response.
+- [x] A successful inspection records `roles.inspector: deepseek` and keeps the snapshot checks.
+- [x] Resume with a matching session id succeeds and passes `--session-id` before `-`.
+- [x] Resume where dsh returns a different session id is refused.
+- [x] A malformed `final` fails as `provider_failure`, not fallback-eligible.
+- [x] A `final` wrapped in a JSON code fence parses.
+- [x] A non-allowlisted tool call gives `confinement_violation`.
+- [x] An outside-repo read gives `confinement_violation`.
+- [x] A working-tree change during a review gives `confinement_violation`.
+- [x] A content change to a file that was already modified before the review gives `confinement_violation`.
+- [x] A content change to a file that was already untracked before the review gives `confinement_violation`.
+- [x] An index-only change (`git add`) during a review gives `confinement_violation`.
+- [x] A `tool_call` marked `truncated` gives `confinement_violation`.
+- [x] A `tool_call` without `input` gives `confinement_violation`.
+- [x] A confinement violation on a run that also exits non-zero, times out or carries `dsh: AUTH:` still gives `confinement_violation`, never `provider_unavailable`. — non-zero exit + `dsh: AUTH:` and timeout cases tested
+- [x] `dsh: AUTH:` on stderr gives `provider_unavailable`.
+- [x] Auth-like text inside `final` does not give `provider_unavailable`.
+- [x] stderr with `patch: entry` or `did not activate` fails the run.
+- [x] `--fallback-from` with a DeepSeek source is refused with the mode-specific message.
+- [x] `--fallback-from` while launching DeepSeek is refused.
+- [x] `--effort` with DeepSeek is refused.
+- [x] DeepSeek with `build` or `panel` is refused.
+- [x] DeepSeek with `os.name == "nt"` is refused. — implemented as `sys.platform == "win32"` (patching `os.name` breaks pathlib)
+- [x] A DeepSeek review in a non-git directory is refused.
+- [x] Same-provider inspection fallback (`--provider BUILDER --fallback-from ...`) still passes the existing test unchanged.
+- [x] Resume with a changed `--host` or `--builder` is refused.
+- [x] `check` and `build` refuse an approval whose `roles.host` differs from the current host. — `check_approval(..., host)` used by both `check` and `build`
+- [x] agy review still runs with `agy_env(profile)` through its `review_env` hook (the existing agy tests pass unmodified).
+- [x] A malformed DeepSeek result cannot be used with `--resume`.
+- [x] A successful review whose allowed `read` returns a `tool_result` body over 8 KiB (marked `truncated`) is accepted.
+- [x] A `tool_result` with a missing or unmatched `callId` gives `confinement_violation`.
+- [x] An unvalidated dsh version is refused without `--allow-unvalidated-cli` and recorded with it.
+- [x] The `dsh-patch.yml` contents equal the Decision 3(b) list, plus `agent-default-model` when `--model` is given.
+- [x] The child env contains `DSH_PERMISSION_MODE=read-only`, `DSH_TOOLS_MODE=native` and `DSH_TELEMETRY_MODE=DISABLED`.
+- [x] Claude and Codex runs still get `env=None` from their `review_env` hooks.
+- [x] A reviewer equal to the host is refused.
+- [x] An inspector equal to the builder is refused.
+- [x] `roles` output shows `deepseek` when requested.
 
-- [ ] Skill walk-through (manual, no quota): with `deepseek_model=deepseek-flash` and `dsh_cli` set, a recorded `provider_unavailable` result produces a replacement command without the DeepSeek model or executable.
+- [x] Skill walk-through (manual, no quota): with `deepseek_model=deepseek-flash` and `dsh_cli` set, a recorded `provider_unavailable` result produces a replacement command without the DeepSeek model or executable. — verified by reading the SKILL.md DeepSeek paragraph; no runner change involved
 
 ### Live, manual (disposable repository, separately authorized)
 
-- [ ] `runner.py review --host claude --provider deepseek` on a small seeded-defect plan returns a valid result that finds the seeded defect.
-- [ ] `runner.py inspect --host claude --provider deepseek --base X` on a small diff returns a valid result.
-- [ ] Both runs are recorded in `VALIDATION.md` with the CLI version, model and usage.
+- [ ] `runner.py review --host claude --provider deepseek` on a small seeded-defect plan returns a valid result that finds the seeded defect. — BLOCKED: no DeepSeek API key yet
+- [ ] `runner.py inspect --host claude --provider deepseek --base X` on a small diff returns a valid result. — BLOCKED: no DeepSeek API key yet
+- [ ] Both runs are recorded in `VALIDATION.md` with the CLI version, model and usage. — BLOCKED: no DeepSeek API key yet
 
 ## Spike results (2026-10-14, dsh 0.2.0-rc.2)
 
@@ -288,67 +288,67 @@ Disposable repo `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-pr
 
 ### Prerequisite
 
-- [ ] PR #2 (`feat/agy-provider`): live agy runs recorded and the PR merged to `main`.
-- [ ] Create a branch `feat/deepseek-reviewer` from the updated `main`, and re-read the adapter hook signatures.
+- [x] PR #2 (`feat/agy-provider`): live agy runs recorded and the PR merged to `main`. — merged 2026-10-14 (`bab2add`); agy `retrieved` item N/A by user decision
+- [x] Create a branch `feat/deepseek-reviewer` from the updated `main`, and re-read the adapter hook signatures.
 
 ### Roles
 
-- [ ] `REVIEWERS` and `INSPECTORS` include `deepseek`; `HOSTS`, `BUILDERS` and `PANEL_WORKERS` are unchanged.
-- [ ] `resolve_roles(..., inspector=None)` refuses an inspector equal to the builder.
-- [ ] `run()` passes `--provider` as the inspector only when it is `deepseek`, and refuses `deepseek` for `build`, `panel` and Windows.
-- [ ] `previous_record` refuses a role mismatch.
-- [ ] `check_approval` binds `roles.host`/`roles.planner`, and requires the reviewer to differ from the host.
-- [ ] `valid_session(provider, value)` is used by `parse_result` and `previous_record`.
+- [x] `REVIEWERS` and `INSPECTORS` include `deepseek`; `HOSTS`, `BUILDERS` and `PANEL_WORKERS` are unchanged.
+- [x] `resolve_roles(..., inspector=None)` refuses an inspector equal to the builder.
+- [x] `run()` passes `--provider` as the inspector only when it is `deepseek`, and refuses `deepseek` for `build`, `panel` and Windows.
+- [x] `previous_record` refuses a role mismatch.
+- [x] `check_approval` binds `roles.host`/`roles.planner`, and requires the reviewer to differ from the host.
+- [x] `valid_session(provider, value)` is used by `parse_result` and `previous_record`.
 
 ### Adapter entry
 
-- [ ] `dsh-patch.yml` writer: the Decision 3(b) list, plus `agent-default-model` for `--model`.
-- [ ] `review_command`: fresh argv, and resume argv with `--session-id`.
-- [ ] `review_env(ctx)` hook on every adapter: `None` for Claude and Codex, `agy_env(profile)` moved into agy's hook.
-- [ ] dsh `review_env` with the three `DSH_*` variables.
-- [ ] dsh `review_prompt`: repository-root sentence, plus the appended `REVIEW_SCHEMA`.
-- [ ] `cli_prefix` entry for `dsh` (POSIX only).
-- [ ] `VALIDATED_DSH_CLI` and the version preflight, with `--allow-unvalidated-cli` recorded.
-- [ ] `--effort` refused for `deepseek`.
+- [x] `dsh-patch.yml` writer: the Decision 3(b) list, plus `agent-default-model` for `--model`.
+- [x] `review_command`: fresh argv, and resume argv with `--session-id`.
+- [x] `review_env(ctx)` hook on every adapter: `None` for Claude and Codex, `agy_env(profile)` moved into agy's hook.
+- [x] dsh `review_env` with the three `DSH_*` variables.
+- [x] dsh `review_prompt`: repository-root sentence, plus the appended `REVIEW_SCHEMA`.
+- [x] `cli_prefix` entry for `dsh` (POSIX only).
+- [x] `VALIDATED_DSH_CLI` and the version preflight, with `--allow-unvalidated-cli` recorded.
+- [x] `--effort` refused for `deepseek`.
 
 ### Parsing and audit
 
-- [ ] `_dsh_review_parse`: event checks, fence strip, `validate_review`, usage sum.
-- [ ] Fail the run on stderr containing `patch: entry` or `did not activate`.
-- [ ] `_dsh_review_audit`: tool allowlist, path key map, `sandbox_permissions`; records the three audit fields.
-- [ ] `_dsh_review_audit`: rejects truncated `tool_call` events and missing or malformed `input`; allows result-body truncation when `callId` and `status` are intact.
-- [ ] Working-tree fingerprint (`snapshot(repo, "HEAD")` + `HEAD` id + `git ls-files -s` digest) before and after the run.
-- [ ] `run()`'s `except` path keeps `confinement_violation` and skips `classify_failure`.
+- [x] `_dsh_review_parse`: event checks, fence strip, `validate_review`, usage sum.
+- [x] Fail the run on stderr containing `patch: entry` or `did not activate`.
+- [x] `_dsh_review_audit`: tool allowlist, path key map, `sandbox_permissions`; records the three audit fields.
+- [x] `_dsh_review_audit`: rejects truncated `tool_call` events and missing or malformed `input`; allows result-body truncation when `callId` and `status` are intact.
+- [x] Working-tree fingerprint (`snapshot(repo, "HEAD")` + `HEAD` id + `git ls-files -s` digest) before and after the run.
+- [x] `run()`'s `except` path keeps `confinement_violation` and skips `classify_failure`.
 
 ### Failure handling
 
-- [ ] dsh branch in `provider_failure_diagnostic` (stderr, `error` and `turn_end` only).
-- [ ] `UNAVAILABLE_MARKERS` gains `dsh: auth`, `missing_credential` and `insufficient balance`.
-- [ ] `--fallback-from` is refused when launching DeepSeek, and `validate_fallback` refuses a DeepSeek source with the mode-specific message.
+- [x] dsh branch in `provider_failure_diagnostic` (stderr, `error` and `turn_end` only).
+- [x] `UNAVAILABLE_MARKERS` gains `dsh: auth`, `missing_credential` and `insufficient balance`.
+- [x] `--fallback-from` is refused when launching DeepSeek, and `validate_fallback` refuses a DeepSeek source with the mode-specific message.
 
 ### Tests
 
-- [ ] Fake-`dsh` tests for every Automated item under Verification.
-- [ ] Full suite and `validate.py` green locally.
+- [x] Fake-`dsh` tests for every Automated item under Verification.
+- [x] Full suite and `validate.py` green locally. — 107 tests OK (1 skipped), validate OK, `git diff --check` clean; six safety checks mutation-tested
 - [ ] CI green on Linux, macOS and Windows.
 
 ### Documentation
 
-- [ ] `SKILL.md`: roles note, plus the `reviewer`, `inspector`, `deepseek_model` and `dsh_cli` tunables.
-- [ ] `SKILL.md`: the unavailable-restart rebuilds `--model`/`--effort`/`--cli` from the replacement provider's settings.
-- [ ] `SKILL.md`: data-egress opt-in gate.
-- [ ] `SKILL.md`: the "unavailable → rerun with the default role" rule, and "malformed → fresh retry, not resume".
-- [ ] `references/runtime.md`: DeepSeek commands.
-- [ ] `references/runtime.md`: a Review boundaries bullet, plus the limitation that detection comes after disclosure.
-- [ ] `AGENTS.md`: a fallback-invariant line for DeepSeek.
-- [ ] `README.md`: an example.
-- [ ] Bump the manifests to the next minor version after PR #2 (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`).
+- [x] `SKILL.md`: roles note, plus the `reviewer`, `inspector`, `deepseek_model` and `dsh_cli` tunables.
+- [x] `SKILL.md`: the unavailable-restart rebuilds `--model`/`--effort`/`--cli` from the replacement provider's settings.
+- [x] `SKILL.md`: data-egress opt-in gate.
+- [x] `SKILL.md`: the "unavailable → rerun with the default role" rule, and "malformed → fresh retry, not resume".
+- [x] `references/runtime.md`: DeepSeek commands.
+- [x] `references/runtime.md`: a Review boundaries bullet, plus the limitation that detection comes after disclosure.
+- [x] `AGENTS.md`: a fallback-invariant line for DeepSeek.
+- [x] `README.md`: an example.
+- [x] Bump the manifests to the next minor version after PR #2 (`.claude-plugin/plugin.json`, `.codex-plugin/plugin.json`).
 
 ### Live validation and handoff
 
-- [ ] Live DeepSeek review recorded in `VALIDATION.md`.
-- [ ] Live DeepSeek inspection recorded in `VALIDATION.md`.
-- [ ] `VALIDATED_DSH_CLI` set to the version that passed.
-- [ ] Fresh Codex inspection of the final diff, with findings resolved.
+- [ ] Live DeepSeek review recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
+- [ ] Live DeepSeek inspection recorded in `VALIDATION.md`. — BLOCKED: no DeepSeek API key yet
+- [ ] `VALIDATED_DSH_CLI` set to the version that passed. — BLOCKED: waits for the live canary
+- [ ] Fresh Codex inspection of the final diff, with findings resolved. — BLOCKED: Codex quota exhausted (user, 2026-10-14); inspect when it returns
 - [ ] Commit and PR, per the user's authorization.
 - [ ] Archive the plan and log to `docs/exec-plans/completed/`.

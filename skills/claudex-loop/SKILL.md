@@ -32,6 +32,8 @@ If the user supplies `codex_cli` or `claude_cli`, map the selected provider's ex
 | `LOG_FILE` / `log` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only transcript, kept beside its plan. Archive both to `docs/exec-plans/completed/` under the completion rule below |
 | `rounds` / `MAX_ROUNDS` | `20` | Maximum completed plan-review rounds |
 | `builder` | host | Provider implementing the plan |
+| `reviewer` / `inspector` | `default` | `deepseek` selects DeepSeek (`--provider deepseek`) for plan review or final inspection; explicit opt-in only |
+| `deepseek_model` / `dsh_cli` | dsh default | Model id and absolute `dsh` path, used only for DeepSeek runs |
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |
 | `mode` | `full` | `full` includes recon/interview; `review` starts from an existing plan |
 | `inspect` | `on` | `off` only when the user explicitly opts out; record it |
@@ -84,6 +86,8 @@ With `mode=review`, load the supplied plan, fill only material gaps with the use
 ## Phase 2 — Independent plan review
 
 Use the shared runner in `review` mode with the actual `--host`, resolved `--plan` and optional model/effort. First round creates a session. Further rounds use `--resume <previous-successful-result.json>` with the same provider/model/effort and a host-authored `--feedback` file containing dispositions. Never use a guessed session id, `--last`, or a build session as a reviewer.
+
+**DeepSeek (opt-in).** `reviewer=deepseek` or `inspector=deepseek` runs the DeepSeek Harness CLI (`dsh`) as the plan reviewer or final inspector, recorded as `cross_provider`. Before the first DeepSeek run in a loop, say in one line that the plan and every file the reviewer reads go to the DeepSeek API, and get the user's explicit opt-in for that repository; never use it for confidential or client repositories, and never pick it automatically, including as a fallback. Map `deepseek_model` to `--model` and `dsh_cli` to `--cli` only for DeepSeek runs; never apply `reviewer_model`, `inspector_model`, `*_effort`, `codex_cli` or `claude_cli` to them (`--effort` is refused). DeepSeek has no same-provider fallback: on `provider_unavailable`, rerun without `--provider deepseek`, rebuilding `--model`/`--effort`/`--cli` from the replacement provider's own settings or CLI defaults (an inspection keeps its `--base`), and log the switch. A malformed DeepSeek reply cannot be resumed; retry with a fresh run, which counts as a round. A `confinement_violation` is never retried automatically; report it. DeepSeek runs are refused on Windows and outside a git repository.
 
 An explicit `review --provider agy` is a plan-body-only review. Set up its isolated profiles with `agy-profile` and log in to each once; use `--agy-model`, `--agy-effort`, and `--agy-cli` for this provider. Its `cross_provider_plan_only` result cannot authorize a build. Never route agy to hosting, building, inspection, or repository research. The offline `agy-review` profile retains review plan text for session resume until the user cleans it.
 

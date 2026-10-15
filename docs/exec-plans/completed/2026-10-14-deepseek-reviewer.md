@@ -1,6 +1,7 @@
 ---
-status: in-progress
+status: completed
 created: 2026-10-14
+completed: 2026-10-15
 ---
 
 # Plan: DeepSeek (dsh) as an opt-in plan reviewer and code inspector
@@ -350,5 +351,5 @@ Disposable repo `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-pr
 - [x] Live DeepSeek inspection recorded in `VALIDATION.md`. — 2026-10-15 live run, VALIDATION.md
 - [x] `VALIDATED_DSH_CLI` set to the version that passed. — `("0.2.0-rc.2",)`
 - [x] Fresh Codex inspection of the final diff, with findings resolved — 4 fresh rounds, DSI-01..08 fixed, APPROVED on `2ad677a` (see log)
-- [ ] Commit and PR, per the user's authorization.
-- [ ] Archive the plan and log to `docs/exec-plans/completed/`.
+- [x] Commit and PR, per the user's authorization — PR #3 (merge is the user's call)
+- [x] Archive the plan and log to `docs/exec-plans/completed/` — 2026-10-15

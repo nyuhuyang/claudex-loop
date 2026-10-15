@@ -66,12 +66,14 @@ Record the choice in `LOG_FILE` and warn again before a later launch whose workl
 Read [the interrogation reference](references/interrogate.md) for decision tiering, the demotion rule, and docs-aware probing technique. Respect existing glossary definitions; resolve ambiguous domain language. Maintain glossary-only context lazily using [CONTEXT-FORMAT.md](CONTEXT-FORMAT.md). Record an ADR only for expensive-to-reverse, non-obvious trade-offs using [ADR-FORMAT.md](ADR-FORMAT.md).
 
 Write the resolved `PLAN_FILE` as an execution plan (the `exec-plan` skill's format; use that skill when the host has it, otherwise follow these rules). Create `docs/exec-plans/active/` if missing. Start with frontmatter `status: in-progress` and `created: <YYYY-MM-DD>`, then include:
-- Goal and observable acceptance criteria.
+- Goal, and `## Acceptance Criteria` as `- [ ]` checkboxes of observable conditions.
 - Concrete approach, key decisions, trade-offs and non-goals.
 - Confirmed assumptions with sources and remaining risks.
 - Relevant toolchain requirements per provider, if any.
-- Verification: exact proof command(s), expected results, and manual/visual checks when needed.
+- `## Verification`: each proof command, expected result, test case and manual/visual check as its own `- [ ]` checkbox.
 - `## Progress Checklist`: every actionable implementation, verification, documentation and handoff step as a `- [ ]` checkbox, in dependency order.
+
+Every list item in Progress Checklist, Acceptance Criteria and Verification (including nested sub-steps, spike questions and test cases) is its own `- [ ]` checkbox with one deliverable; never bundle several changes into one box or nest plain bullets under one. Decisions, facts and rationale stay plain prose or bullets. `scripts/validate.py` in this repository enforces it, and the plan reviewer reports violations.
 
 Checkbox state is the canonical progress record. Change `[ ]` to `[x]` immediately after that step's verification succeeds, never in advance. Keep blocked work unchecked with `— BLOCKED: <reason>`; mark removed scope `[x] ... — N/A: <reason>` only when the scope change or a user decision removes it. A resumed session reads the active plan first and continues from the first dependency-ready unchecked item.
 

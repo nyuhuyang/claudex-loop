@@ -1,6 +1,7 @@
 ---
-status: in-progress
+status: completed
 created: 2026-09-23
+completed: 2026-10-14
 ---
 
 # Plan: Antigravity CLI (agy) as a third provider — web researcher and plan-body reviewer
@@ -84,7 +85,7 @@ agy repo reading, building, inspecting, or hosting claudex-loop; the Python SDK;
 - [x] Live Claude-hosted panel with Codex + agy web workers — 2026-09-23 and 2026-10-14 runs, both `partial` (quota; summary over limit); recorded in VALIDATION.md
 - [x] Live agy `retrieved` citation through the runner — N/A: user decision 2026-10-14 to merge without it (agy is low priority); recorded as a limitation in runtime.md and VALIDATION.md; length-bounded schema shipped for the next attempt
 - [x] Open PR — PR #2
-- [ ] Merge PR #2 and archive this plan
+- [x] Merge PR #2 and archive this plan — merged 2026-10-14 (`bab2add`)
 
 ## Verification
 

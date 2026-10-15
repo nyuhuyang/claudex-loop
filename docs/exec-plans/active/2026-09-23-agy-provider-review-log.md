@@ -65,3 +65,15 @@ Second run: `completed`, `cross_provider_plan_only`, session UUID returned, no d
 ## Live mixed panel (user-approved digest 8f78401e…)
 Before approval: agy source rules now tell the worker that `read_url_content` saves the page and to read it with `view_file` (prompt change, re-dry-run, new digest shown to the user).
 Result `partial`: Codex worker completed (1 retrieved, 3 unverified); agy worker failed with exit 3 / `AGY_ERROR RESOURCE_EXHAUSTED` — Gemini weekly quota 0% until 2026-09-30. Runner behaviour correct (failed worker, partial panel, transcript + saved pages copied, profile cleaned). Added: preflight refuses launch when `/usage` shows 0% Gemini quota (live-verified). Open: macOS keychain dialog under the profile `HOME` on token refresh (user told to Cancel); agy `retrieved` citations unproven live until quota resets.
+
+## Live mixed panel rerun (2026-10-14, Claude host, approved digest f575d215…)
+- agy 1.3.5, unvalidated (override recorded); `gemini-3.8-flash-high`.
+- First launch: preflight refused it, because 1.3.5's empty plugin list reads `No plugins installed.`. Fix: accept exactly that string and the 1.2.9 string; a test covers both, plus the failure case. 90 tests OK.
+- Relaunch: `partial`.
+  - Codex worker: completed, 5 `unverified`.
+  - agy worker: failed `validate_panel_response`, because its summary was 1,011 characters (limit 1,000). It made 47 tool calls; 2 `run_command` attempts were denied.
+- Offline: 7 of 8 agy excerpts occur in the page saved for the claimed URL.
+- Open:
+  - the agy `schema.json` has no `maxLength`, so Gemini can overrun the limits stated in the prompt;
+  - a live `retrieved` claim is still unproven;
+  - the Gemini pool was at 9% after the run (resets 2026-10-16).

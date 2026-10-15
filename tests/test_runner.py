@@ -1436,6 +1436,19 @@ class AgyTests(unittest.TestCase):
             self.assertEqual(runner.agy_preflight(["agy"], self.profile, self.root, False, "web"), ("1.2.9", True))
         self.assertIn((["-p", "/usage"], 30), calls)
 
+    def test_preflight_accepts_both_empty_plugin_messages_only(self):
+        for listing, ok in (("No imported plugins.", True), ("No plugins installed.", True),
+                            ("Plugin configured", False)):
+            answers = {"--version": "1.2.9", "mcp": "No MCP servers configured.",
+                       "plugin": listing, "-p": "Gemini remaining quota: 100%"}
+            with self.subTest(listing=listing), \
+                    patch.object(runner, "agy_probe", side_effect=lambda p, f, c, pr, timeout=10: answers[f[0]]):
+                if ok:
+                    runner.agy_preflight(["agy"], self.profile, self.root, False, "web")
+                else:
+                    with self.assertRaises(runner.RunError):
+                        runner.agy_preflight(["agy"], self.profile, self.root, False, "web")
+
     def test_review_uses_single_version_probe(self):
         code, record, _, error = self.call(mode="review", case="version_drift")
         self.assertEqual(code, 0, (record, error))

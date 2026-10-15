@@ -519,7 +519,8 @@ def agy_preflight(prefix: list[str], profile: Path, cwd: Path, allow: bool, role
     version, validated = agy_version(prefix, profile, cwd, allow, role)
     if agy_probe(prefix, ["mcp", "list"], cwd, profile) != "No MCP servers configured.":
         raise RunError("agy MCP listing is not empty.")
-    if agy_probe(prefix, ["plugin", "list"], cwd, profile) != "No imported plugins.":
+    # agy 1.2.9 prints the first message, 1.3.5 the second; anything else fails closed.
+    if agy_probe(prefix, ["plugin", "list"], cwd, profile) not in ("No imported plugins.", "No plugins installed."):
         raise RunError("agy plugin listing is not empty.")
     usage = agy_probe(prefix, ["-p", "/usage"], cwd, profile, timeout=30)
     if not usage or "authentication required" in usage.lower():

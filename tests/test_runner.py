@@ -278,6 +278,10 @@ elif case == 'no_input':
     del call['input']
 elif case == 'unmatched_result':
     result['callId'] = 'c9'
+elif case == 'list_result_id':
+    result['callId'] = []
+elif case == 'symlink_loop':
+    call['input'] = {'file_path': 'loop'}
 elif case == 'grep_include':
     call = {'type': 'tool_call', 'callId': 'c1', 'tool': 'grep',
             'input': {'pattern': 'add', 'path': '.', 'include': '*.py'}}
@@ -1969,6 +1973,15 @@ class DeepSeekTests(unittest.TestCase):
         self.assertTrue(any("not a complete JSON object" in e for e in record["unauditable_tool_events"]))
         code, record, _, _ = self.call(case="violation_timeout", extra=("--timeout", "2"))
         self.assertEqual((record["failure_kind"], record["fallback_eligible"]), ("confinement_violation", False))
+
+    def test_audit_crash_inputs_become_recorded_violations(self):
+        os.symlink("loop", self.repo / "loop")
+        self.git("add", "loop")
+        self.git("commit", "-qm", "loop")
+        for case in ("symlink_loop", "list_result_id"):
+            with self.subTest(case=case):
+                record = self.assert_violation(case)
+                self.assertEqual(record["status"], "failed")
 
     def test_change_to_already_dirty_files_or_index_is_detected(self):
         (self.repo / "existing.py").write_text("dirty before review\n")

@@ -1630,8 +1630,11 @@ def _dsh_review_prompt(repo: Path) -> str:
 def _dsh_path_ok(value, base: Path, repo: Path, plan: Path) -> bool:
     if not isinstance(value, str) or not value or value.startswith("~"):
         return False
-    path = Path(value) if Path(value).is_absolute() else base / value
-    resolved = path.resolve()
+    try:
+        path = Path(value) if Path(value).is_absolute() else base / value
+        resolved = path.resolve()
+    except (RuntimeError, OSError, ValueError):  # symlink loop, NUL byte, bad path: not auditable
+        return False
     return resolved.is_relative_to(repo) or resolved == plan
 
 
@@ -1682,7 +1685,7 @@ def dsh_audit(stdout: str, repo: Path, plan: Path) -> dict:
                 if not _dsh_path_ok(args["path"], repo, repo, plan):
                     outside.append(f"{tool}.path={args['path']}")
                     continue
-                base = (repo / args["path"]).resolve()
+                base = (repo / args["path"]).resolve()  # _dsh_path_ok above already resolved it
             for key, value in args.items():
                 if key == "sandbox_permissions" or key == "justification":
                     continue
@@ -1697,7 +1700,9 @@ def dsh_audit(stdout: str, repo: Path, plan: Path) -> dict:
                     unauditable.append(f"{tool} argument {key!r} is not in the audit map")
         elif kind == "tool_result":
             # Body truncation is fine: confinement uses the call's input. Correlation is not optional.
-            if event.get("callId") not in calls or not isinstance(event.get("status"), str):
+            result_id = event.get("callId")
+            if not isinstance(result_id, str) or result_id not in calls \
+                    or not isinstance(event.get("status"), str):
                 unauditable.append(f"tool_result {event.get('callId')!r} has no matching call or status")
     return {"tool_calls_audited": len(calls), "disallowed_tool_calls": disallowed,
             "read_confinement_violations": outside, "unauditable_tool_events": unauditable}
@@ -1708,7 +1713,11 @@ def _dsh_review_audit(ctx: dict) -> dict:
     stdout_path, stderr_path = run_dir / "stdout.txt", run_dir / "stderr.txt"
     stdout = stdout_path.read_text(encoding="utf-8", errors="replace") if stdout_path.exists() else ""
     stderr = stderr_path.read_text(encoding="utf-8", errors="replace") if stderr_path.exists() else ""
-    audit = dsh_audit(stdout, ctx["repo"], ctx["plan"])
+    try:
+        audit = dsh_audit(stdout, ctx["repo"], ctx["plan"])
+    except Exception as exc:  # any audit crash is unauditable evidence, never an unrecorded run
+        audit = {"tool_calls_audited": None, "disallowed_tool_calls": [], "read_confinement_violations": [],
+                 "unauditable_tool_events": [f"audit failed: {type(exc).__name__}: {exc}"]}
     try:
         if dsh_fingerprint(ctx["repo"]) != ctx["fingerprint"]:
             audit["working_tree_changed"] = True

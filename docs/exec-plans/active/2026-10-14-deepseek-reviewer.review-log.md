@@ -175,3 +175,12 @@ These material changes need another review:
   - Fix: the diagnostic now reads dsh's documented stable codes (from the dsh-llm-deepseek README) from stderr `dsh: CODE:` lines and from `error`/`turn_end` events.
   - Unavailable codes: AUTH, QUOTA, RATE_LIMIT, SERVER, TRANSPORT, TIMEOUT, MISSING_CREDENTIAL, INVALID_CREDENTIAL, HTTP_402, HTTP_429 and HTTP_5xx. INVALID_REQUEST stays ineligible.
   - Tests cover SERVER, RATE_LIMIT, INVALID_REQUEST and the exit-0 failed turn. The mutation check fails 3 tests. Full suite OK.
+
+## Inspection round 3 — fresh Codex — REVISE (2026-10-15)
+
+- **Run:** `/private/tmp/claude-501/-Users-yanghu-Documents-AI-Workspace-tools-claudex-loop/8c14c650-f5f5-4cce-b50c-f120ae48747f/scratchpad/dsr-inspect3/claudex-lxpw4_9l/result.json`.
+- **Usage:** 2,121,569 input tokens (1,928,064 cached), 8,897 output tokens.
+- **DSI-08 (medium), accepted:** the audit could crash on a tracked symlink loop (`resolve()` raises RuntimeError) or on a non-string `tool_result.callId` (TypeError), leaving `result.json` at `running`. Two layers of fix:
+  - path-resolution errors make the path fail the check, and `callId` must be a string;
+  - any exception in the audit is recorded as unauditable evidence, which gives `confinement_violation`.
+  - Regression tests cover both cases. Mutation checks, with the outer catch removed, fail each test. Full suite OK.

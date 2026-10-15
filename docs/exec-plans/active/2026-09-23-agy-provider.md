@@ -79,8 +79,12 @@ agy repo reading, building, inspecting, or hosting claudex-loop; the Python SDK;
 - [x] `review --provider agy`, plan-only assurance, `check_approval` rejection
 - [x] Transcript cleanup for panel workers
 - [x] Tests with a fake `agy` (stream, transcript, denial, AGY_ERROR, hostile tool, non-gemini model, preflight failures, resume id)
-- [ ] Docs updated; live runs: one agy plan review, one Claude-hosted panel with Codex + agy web workers
-- [ ] Open PR; archive this plan
+- [x] Docs updated (SKILL.md, runtime.md, research.md, README, VALIDATION.md)
+- [x] Live agy plan review through the runner — 2026-09-23, `completed`, `cross_provider_plan_only`
+- [x] Live Claude-hosted panel with Codex + agy web workers — 2026-09-23 and 2026-10-14 runs, both `partial` (quota; summary over limit); recorded in VALIDATION.md
+- [x] Live agy `retrieved` citation through the runner — N/A: user decision 2026-10-14 to merge without it (agy is low priority); recorded as a limitation in runtime.md and VALIDATION.md; length-bounded schema shipped for the next attempt
+- [x] Open PR — PR #2
+- [ ] Merge PR #2 and archive this plan
 
 ## Verification
 

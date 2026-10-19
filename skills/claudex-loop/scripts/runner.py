@@ -29,7 +29,7 @@ INSPECTORS = PROVIDERS + ("deepseek",)
 PANEL_WORKERS = PROVIDERS + ("agy",)
 # dsh versions whose read-only review passed a live canary (VALIDATION.md); others need
 # --allow-unvalidated-cli, which is recorded.
-VALIDATED_DSH_CLI: tuple[str, ...] = ("0.2.0-rc.2",)
+VALIDATED_DSH_CLI: tuple[str, ...] = ("0.2.1-rc.2",)
 DSH_TOOLS = {"read", "glob", "grep"}
 # dsh-llm-deepseek's stable failure codes that mean the provider, not the request, is unavailable.
 # INVALID_REQUEST, CONTEXT_WINDOW_EXCEEDED and other HTTP_4xx stay ordinary failures.
@@ -37,6 +37,8 @@ DSH_UNAVAILABLE_CODES = {"AUTH", "QUOTA", "RATE_LIMIT", "SERVER", "TRANSPORT", "
                          "MISSING_CREDENTIAL", "INVALID_CREDENTIAL", "HTTP_402", "HTTP_429"}
 # Plugins removed from the dsh headless profile. bash-sandbox stays: `permission` waits for
 # its shell service, and tool-bash alone exposes the shell tool (spike r1-r4, dsh 0.2.0-rc.2).
+# 0.2.1-rc.2 adds a `working_directory` cd tool (relative reads would escape the audit's repo
+# base) and a web provider; its working-directory and remote-access services must stay enabled.
 DSH_DISABLE = (
     "tool-bash", "tool-pwsh", "pwsh-sandbox", "tool-jobs", "jobs",
     "tool-subagent", "tool-subagent-fork", "tool-subagent-control", "tool-subagent-list-agents",
@@ -45,17 +47,18 @@ DSH_DISABLE = (
     "tool-skill", "skill", "skill-filesystem", "agent-instructions",
     "tool-todo", "tool-goal", "goal", "goal-round-driver", "command-goal", "plan-mode", "user-questions",
     "session-title-llm", "session-title", "otel", "session-telemetry-otel",
+    "tool-working-directory", "web-deepseek-api",
 )
 # Path-bearing input keys per tool (spike s9); any other key except the numeric read window fails closed.
 DSH_PATH_KEYS = {"read": ("file_path",), "glob": ("path", "pattern"), "grep": ("path",)}
 DSH_OTHER_KEYS = {"read": ("offset", "limit"), "glob": (), "grep": ("pattern", "include")}
-# Entries left enabled in `dsh --profile headless --patch dsh-patch.yml --dump-config` on 0.2.0-rc.2
+# Entries left enabled in `dsh --profile headless --patch dsh-patch.yml --dump-config` on 0.2.1-rc.2
 # (some are conditionally enabled by a `!!js` expression). Any other enabled entry - a profile or
 # home overlay adding hooks, a replacement tool, filesystem, sandbox or permission plugin - refuses.
 DSH_ENABLED_ALLOWLIST = frozenset((
     "plugin-manager", "timer", "llm", "deepseek-llm-api-extensions", "session", "session-log-deepseek",
     "typert", "typert-loader", "typert-gateway", "agent", "plugin-package-inventory-deepseek",
-    "agent-default-model", "llm-retry", "config-editor", "settings", "authorization", "deepseek-account",
+    "agent-default-model", "llm-retry", "config-editor", "settings",
     "credentials", "llm-pi-ai", "session-persistence-jsonl", "attachment-local", "session-query-sqlite",
     "session-projection", "storage", "storage-json", "storage-domain", "session-projection-cache",
     "subprocess", "sandbox", "sandbox-policy", "bash-sandbox", "approval", "permission", "shell-env",
@@ -64,7 +67,7 @@ DSH_ENABLED_ALLOWLIST = frozenset((
     "subagent-fork-in-process", "timeout-policy", "spill-local", "spill-policy",
     "session-checkpoint-policy", "tool-result-pruner", "image-offload", "repeat-tool-reminder", "tools",
     "system-prompt", "agent-loop", "fs-sandbox", "llm-deepseek", "llm-deepseek-account",
-    "headless-startup", "headless-runner",
+    "headless-startup", "headless-runner", "remote-access", "working-directory",
 ))
 VALIDATED_AGY_CLI = ("1.2.9",)
 AGY_MODEL = "gemini-3.1-pro-high"
@@ -1534,6 +1537,9 @@ def _agy_panel_audit(stdout: str, profile: Path, session: str, kind: str) -> tup
 def dsh_patch(run_dir: Path, model: str | None) -> Path:
     """Write the --patch overlay that removes every dsh tool except read/glob/grep (+ tool-fs)."""
     lines = [f"- id: {entry}\n  disabled: true\n" for entry in DSH_DISABLE]
+    # 0.2.1 headless disables dsh's credential store; re-enable it so the key stays in dsh
+    # (stored through `dsh web`) and never passes through this runner.
+    lines.append("- id: credentials\n  disabled: false\n")
     if model:
         if not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", model):
             raise RunError("DeepSeek model id must be lowercase letters, digits, dots or hyphens.")
@@ -1545,8 +1551,11 @@ def dsh_patch(run_dir: Path, model: str | None) -> Path:
 
 
 def dsh_command(mode: str, run_dir: Path, model: str | None, session: str | None) -> list[str]:
-    args = ["--profile", "headless", "--patch", str(dsh_patch(run_dir, model)), "--json"]
-    return args + (["--session-id", session] if session else []) + ["-"]
+    # dsh persists `cd` in the session, so a resumed reviewer could read relative paths outside
+    # the repository while the audit resolves them inside it. Every DeepSeek run starts fresh.
+    if session:
+        raise RunError("DeepSeek runs never resume a session.")
+    return ["--profile", "headless", "--patch", str(dsh_patch(run_dir, model)), "--json", "-"]
 
 
 def dsh_check_config(prefix: list[str], run_dir: Path, repo: Path, env: dict) -> int:
@@ -1560,6 +1569,8 @@ def dsh_check_config(prefix: list[str], run_dir: Path, repo: Path, env: dict) ->
                             cwd=repo, env=env, stdin=subprocess.DEVNULL, capture_output=True, timeout=60)
     if result.returncode:
         raise RunError("dsh --dump-config failed; cannot verify the reviewer's plugin composition.")
+    if b"patch: entry" in result.stderr:
+        raise RunError("dsh did not apply the reviewer patch (unknown plugin id); refusing before launch.")
     text = result.stdout.decode("utf-8", errors="replace")
     (run_dir / "dsh-config.txt").write_text(text, encoding="utf-8")
     for header in re.findall(r"^# == (.+)$", text, re.M):
@@ -1742,8 +1753,6 @@ def _dsh_review_parse(run_dir: Path, expected_session, model) -> dict:
         raise RunError("Missing or ambiguous DeepSeek session event.")
     if len(finals) != 1 or not isinstance(finals[0], str) or not finals[0].strip():
         raise RunError("Missing, empty or ambiguous DeepSeek final reply.")
-    if expected_session and sessions[0] != expected_session:
-        raise RunError("CLI resumed a different session; refusing its result.")
     text = finals[0].strip()
     fenced = re.fullmatch(r"```(?:json)?\s*\n(.*)\n```", text, re.S)
     try:
@@ -2123,6 +2132,9 @@ def run(args) -> int:
                            f"{'reviewer' if args.mode == 'review' else 'inspector'} instead.")
         if args.effort:
             raise RunError("--effort has no verified DeepSeek mapping; omit it.")
+        if args.resume:
+            raise RunError("DeepSeek runs never resume: start a fresh round and carry prior findings "
+                           "and dispositions in --feedback.")
     fallback = (validate_fallback(Path(args.fallback_from), repo, plan, provider,
                                   args.mode, roles, args.base, bool(args.resume))
                 if args.fallback_from else None)

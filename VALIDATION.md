@@ -8,6 +8,20 @@ Live profile canary, 2026-09-23, agy **1.2.9** with **gemini-3.8-flash-medium**:
 
 Live mixed panel rerun, 2026-10-14, agy **1.3.5** (unvalidated, `--allow-unvalidated-cli` recorded) with **gemini-3.8-flash-high**, Claude host, user-approved digest `f575d215…`, one Codex and one agy web worker on a public pathlib question. The first launch stopped in preflight because agy 1.3.5 prints `No plugins installed.` instead of `No imported plugins.` for an empty plugin list; the runner now accepts exactly those two strings. MCP-list and `/usage` formats were unchanged. The relaunch returned `partial`. The Codex worker completed with 5 `unverified` search-snippet claims. The agy worker made 47 tool calls, including `read_url_content` on docs.python.org and raw CPython `pathlib.rst`, and two `run_command` attempts that were denied and recorded as `denied_attempts`. Its structured reply was then rejected because its summary was 1,011 characters, over the 1,000-character limit, so no claim was verified at runtime. An offline check of the copied transcript and saved pages found 7 of its 8 excerpts verbatim in a page saved by `read_url_content` for the claimed URL; the eighth quoted HTML not present in any saved page. This suggests the citation path works, but an agy `retrieved` claim through the runner is still unproven live. The run used about 25% of the account's weekly Gemini pool (34% → 9%, resets 2026-10-16).
 
+## DeepSeek provider on dsh 0.2.1-rc.2 (2026-10-17)
+
+Live runs through the runner on dsh **0.2.1-rc.2**, which is now `VALIDATED_DSH_CLI`.
+- **Setup:** the default model `deepseek-flash` (DeepSeek-V4.1-Flash), a Claude host, and **no `DEEPSEEK_API_KEY` in the environment**. The key came from dsh's own store, which the patch re-enables. The repository was a disposable git repo with a seeded `add` returning `a - b` and a plan claiming it is already correct.
+- **Composition:** `dsh-config.txt` shows `credentials` enabled and `tool-working-directory` and `web-deepseek-api` disabled. There were 60 enabled entries, all inside the allowlist, and no `did not activate`.
+- **Review:** `completed`, `cross_provider`, `cli_validated=true`, REVISE. Its first two findings (both high) named `a - b` and the failing `assert add(2, 3) == 5`. 6 tool calls were audited with no findings. 1,484 input / 3,332 output tokens (8,448 cached), 21.4 s.
+- **Second review round:** a fresh session with host `--feedback`; DeepSeek runs no longer resume. `completed` with a different session id, REVISE, 4 calls audited clean, 14.2 s.
+- **Inspection** (diff adding a "Return the sum" docstring above `a - b`):
+  - The first attempt failed as an ordinary `provider_failure`: the model closed its JSON array with `}`, and the runner correctly refused the reply.
+  - A fresh retry `completed` with `roles.inspector=deepseek`, REVISE. Its high finding said the docstring and plan contradict `return a - b`. 5 calls audited clean, 13.0 s.
+- **Env-key review:** with `DEEPSEEK_API_KEY` set in the environment, the review completed REVISE, with 6 calls audited clean.
+- **remote-access surface:** during a live reviewer run, `lsof` on the dsh process and its children showed one outbound :443 connection (the DeepSeek API), no LISTEN socket and no named unix socket.
+- **No key in artifacts:** no run artifact contains the API key (`grep` over all canary artifacts).
+
 ## DeepSeek provider (2026-10-15)
 
 Live runs through the runner, dsh **0.2.0-rc.2** (headless profile, run with `--allow-unvalidated-cli` before this canary set `VALIDATED_DSH_CLI`), CLI-default model `deepseek-flash`, Claude host, disposable git repo with a seeded `add` that returns `a - b` and a plan claiming it is already correct:
@@ -22,7 +36,7 @@ Development date: 2026-09-06. Tests run in disposable fixtures; production repos
 ## Automated checks
 
 - `python scripts/validate.py`: active skill frontmatter, local references, both provider manifests and shared-runner presence.
-- `python -m unittest discover -s tests -v`: **85 passing tests** with fake CLI executables and real temporary Git repositories, without model calls.
+- `python -m unittest discover -s tests -v`: **110 tests (1 skipped on non-Windows)** with fake CLI executables and real temporary Git repositories, without model calls.
 - Codex Skill Creator validator: all three active skills.
 - Codex Plugin Creator validator: `.codex-plugin/plugin.json`.
 - `git diff --check`.

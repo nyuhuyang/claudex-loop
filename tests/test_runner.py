@@ -228,13 +228,17 @@ sys.exit(3 if case == 'api_error' else 0)
 FAKE_DSH = r"""
 import json, os, pathlib, subprocess, sys
 case = os.environ.get('FAKE_DSH_CASE', 'ok')
-if sys.argv[1:] == ['--version']:
-    print('9.9.9' if case == 'version' else '0.2.0-rc.2')
-    sys.exit(0)
 d = pathlib.Path(os.environ['FAKE_DSH_DIR'])
+with open(d / 'invocations.txt', 'a') as marker:
+    marker.write(' '.join(sys.argv[1:]) + '\n')
+if sys.argv[1:] == ['--version']:
+    print('9.9.9' if case == 'version' else '0.2.1-rc.2')
+    sys.exit(0)
 if '--dump-config' in sys.argv:
     if case == 'dump_fail':
         sys.exit(2)
+    if case == 'dump_patch_warn':
+        print('dsh: [p.yml] patch: entry "tool-working-directory" not found', file=sys.stderr)
     patch_path = sys.argv[sys.argv.index('--patch') + 1]
     ids = json.loads(os.environ['FAKE_DSH_IDS'])
     out = ['# == @deepseek-ai/dsh-base'] + ['- id: %s\n  name: x' % i for i in ids]
@@ -243,6 +247,8 @@ if '--dump-config' in sys.argv:
         out += ['# == /home/u/.dsh/profiles/headless/cordis.patch.yml', '- id: tool-fs\n  name: x']
     if case == 'extra_plugin':
         out += ['# == @deepseek-ai/dsh-hooks', '- id: hooks-claude-code\n  name: x']
+    if case in ('authorization', 'deepseek-account'):
+        out += ['# == @deepseek-ai/dsh-base', '- id: %s\n  name: x' % case]
     print('\n'.join(out))
     sys.exit(0)
 prompt = sys.stdin.read()
@@ -252,10 +258,7 @@ prompt = sys.stdin.read()
 (d / 'cwd.txt').write_text(os.getcwd())
 patch = pathlib.Path(sys.argv[sys.argv.index('--patch') + 1]).read_text()
 (d / 'patch.yml').write_text(patch)
-sid = sys.argv[sys.argv.index('--session-id') + 1] if '--session-id' in sys.argv else \
-    'session-0b5f3c1e-7d2a-4b8e-9f10-2a3b4c5d6e7f'
-if case == 'other_session':
-    sid = 'session-11111111-2222-4333-8444-555555555555'
+sid = 'session-0b5f3c1e-7d2a-4b8e-9f10-2a3b4c5d6e7f'
 good = json.dumps({"verdict": "APPROVED", "summary": "Consistent.", "findings": [],
                    "coverage": ["plan"], "limitations": []})
 final = {'malformed': 'not json at all', 'final_auth': 'dsh: AUTH: quota exceeded, rate limit',
@@ -1875,7 +1878,8 @@ class DeepSeekTests(unittest.TestCase):
     def git(self, *args):
         return subprocess.check_output(["git", *args], cwd=self.repo, stderr=subprocess.PIPE).decode()
 
-    def call(self, mode="review", case="ok", extra=(), provider="deepseek", validated=True, host="claude"):
+    def call(self, mode="review", case="ok", extra=(), provider="deepseek", validated=True, host="claude",
+             ids=None):
         args = [mode, "--host", host, "--repo", str(self.repo), "--plan", str(self.plan),
                 "--artifacts", str(self.artifacts), *extra]
         if provider:
@@ -1885,9 +1889,9 @@ class DeepSeekTests(unittest.TestCase):
         old = set(self.artifacts.glob("*/result.json")) if self.artifacts.exists() else set()
         output, error = io.StringIO(), io.StringIO()
         with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.dsh)]), \
-             patch.object(runner, "VALIDATED_DSH_CLI", ("0.2.0-rc.2",) if validated else ()), \
+             patch.object(runner, "VALIDATED_DSH_CLI", ("0.2.1-rc.2",) if validated else ()), \
              patch.dict(os.environ, {"FAKE_DSH_CASE": case, "FAKE_DSH_DIR": str(self.fake),
-                                     "FAKE_DSH_IDS": json.dumps(sorted(runner.DSH_ENABLED_ALLOWLIST)),
+                                     "FAKE_DSH_IDS": json.dumps(ids or sorted(runner.DSH_ENABLED_ALLOWLIST)),
                                      "FAKE_DSH_OUTSIDE": str(self.outside), "FAKE_DSH_PLAN": str(self.plan)}), \
              contextlib.redirect_stdout(output), contextlib.redirect_stderr(error):
             code = runner.main(args)
@@ -1917,6 +1921,9 @@ class DeepSeekTests(unittest.TestCase):
                           "DSH_TELEMETRY_MODE": "DISABLED"})
         patch_text = (self.fake / "patch.yml").read_text()
         self.assertEqual(patch_text.count("disabled: true"), len(runner.DSH_DISABLE))
+        for entry in ("tool-working-directory", "web-deepseek-api"):
+            self.assertIn(f"- id: {entry}\n  disabled: true\n", patch_text)
+        self.assertIn("- id: credentials\n  disabled: false\n", patch_text)
         self.assertNotIn("bash-sandbox", patch_text.replace("pwsh-sandbox", ""))
         self.assertNotIn("agent-default-model", patch_text)
         self.assertEqual(Path((self.fake / "cwd.txt").read_text()).resolve(), self.repo)
@@ -1931,32 +1938,36 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual((record["roles"]["inspector"], record["provider"]), ("deepseek", "deepseek"))
         self.assertIsNotNone(record["snapshot"])
 
-    def test_resume_matching_session_and_refuse_a_different_one(self):
-        code, first, path, error = self.call()
+    def assert_resume_refused(self, path, **kwargs):
+        marker = self.fake / "invocations.txt"
+        marker.unlink(missing_ok=True)
+        before = set(self.artifacts.glob("*/result.json"))
+        code, record, _, error = self.call(extra=("--resume", str(path), *kwargs.pop("extra", ())), **kwargs)
+        self.assertEqual((code, record), (1, None))
+        self.assertIn("never resume", error)
+        self.assertEqual(set(self.artifacts.glob("*/result.json")), before)
+        self.assertFalse(marker.exists())
+
+    def test_resume_is_refused_before_launch(self):
+        # dsh persists `cd` in a session, so a resumed reviewer could read outside the repository.
+        code, _, path, error = self.call()
         self.assertEqual(code, 0, error)
-        code, record, _, error = self.call(extra=("--resume", str(path)))
-        self.assertEqual(code, 0, error)
-        argv = json.loads((self.fake / "argv.json").read_text())
-        self.assertEqual(argv[-3:], ["--session-id", first["session_id"], "-"])
-        code, record, _, _ = self.call(case="other_session", extra=("--resume", str(path)))
-        self.assertEqual(code, 1)
-        self.assertIn("different session", record["error"])
+        self.assert_resume_refused(path)
+        self.assert_resume_refused(path, mode="inspect")
+        with self.assertRaisesRegex(runner.RunError, "never resume"):
+            runner.dsh_command("review", self.artifacts, None, "session-0b5f3c1e-7d2a-4b8e-9f10-2a3b4c5d6e7f")
 
     def test_resume_refuses_changed_roles(self):
         code, _, path, error = self.call()
         self.assertEqual(code, 0, error)
         for extra, host in ((("--builder", "codex"), "claude"), ((), "codex")):
             with self.subTest(host=host, extra=extra):
-                code, _, _, error = self.call(extra=("--resume", str(path), *extra), host=host)
-                self.assertEqual(code, 1)
-                self.assertIn("roles", error)
+                self.assert_resume_refused(path, extra=extra, host=host)
 
     def test_malformed_and_fenced_final(self):
         code, record, path, _ = self.call(case="malformed")
         self.assertEqual((code, record["failure_kind"], record["fallback_eligible"]), (1, "provider_failure", False))
-        code, _, _, error = self.call(extra=("--resume", str(path)))
-        self.assertEqual(code, 1)
-        self.assertIn("status", error)
+        self.assert_resume_refused(path)
         code, record, _, error = self.call(case="fenced")
         self.assertEqual(code, 0, error)
         self.assertEqual(record["response"]["verdict"], "APPROVED")
@@ -2036,13 +2047,39 @@ class DeepSeekTests(unittest.TestCase):
 
     def test_profile_composition_is_verified_before_launch(self):
         for case, message in (("user_layer", "non-vendor layer"), ("extra_plugin", "hooks-claude-code"),
-                              ("dump_fail", "--dump-config failed")):
+                              ("dump_fail", "--dump-config failed"), ("dump_patch_warn", "unknown plugin id"),
+                              ("authorization", "authorization"), ("deepseek-account", "deepseek-account")):
             with self.subTest(case=case):
                 code, record, _, _ = self.call(case=case)
                 self.assertEqual((code, record["failure_kind"], record["fallback_eligible"]),
                                  (1, "provider_failure", False))
                 self.assertIn(message, record["error"])
                 self.assertFalse((self.fake / "argv.json").exists())
+
+    def test_spike_composition_of_validated_version_is_accepted(self):
+        self.assertEqual(runner.VALIDATED_DSH_CLI, ("0.2.1-rc.2",))
+        # Enabled ids from `dsh --profile headless --patch dsh-patch.yml --dump-config`, dsh 0.2.1-rc.2.
+        spike = ["plugin-manager", "timer", "llm", "deepseek-llm-api-extensions", "session",
+                 "session-log-deepseek", "typert", "typert-loader", "typert-gateway", "remote-access", "agent",
+                 "plugin-package-inventory-deepseek", "agent-default-model", "llm-retry", "config-editor",
+                 "settings", "credentials", "llm-pi-ai", "session-persistence-jsonl", "attachment-local",
+                 "session-query-sqlite", "working-directory", "session-projection", "storage", "storage-json",
+                 "storage-domain", "session-projection-cache", "subprocess", "sandbox", "sandbox-policy",
+                 "bash-sandbox", "approval", "permission", "shell-env", "fs-observation-policy", "tool-fs",
+                 "tool-fs-search", "commands", "command-feedback", "token-meter", "compaction-basic",
+                 "command-compact", "subagent", "subagent-spawn-in-process", "subagent-fork-in-process",
+                 "timeout-policy", "spill-local", "spill-policy", "session-checkpoint-policy",
+                 "tool-result-pruner", "image-offload", "repeat-tool-reminder", "tools", "system-prompt",
+                 "agent-loop", "fs-sandbox", "llm-deepseek", "llm-deepseek-account", "headless-startup",
+                 "headless-runner"]
+        # The allowlist is exactly the validated composition: an extra entry would widen the boundary.
+        self.assertEqual(runner.DSH_ENABLED_ALLOWLIST, frozenset(spike))
+        code, record, _, error = self.call(ids=spike)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(record["dsh_enabled_entries"], len(spike))
+        code, record, _, _ = self.call(ids=spike + ["tool-new-model-facing"])
+        self.assertEqual(code, 1)
+        self.assertIn("tool-new-model-facing", record["error"])
 
     def test_fingerprint_failure_keeps_violation_evidence(self):
         real = runner.dsh_fingerprint

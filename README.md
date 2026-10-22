@@ -26,19 +26,20 @@ Claudex Loop gives a plan an independent review before implementation, then give
 |---|---|---|---|---|
 | **Claude Code** | Current Claude session | Codex | Claude | Fresh Codex session |
 | **Codex** | Current Codex session | Claude | Codex | Fresh Claude session |
+| **DeepSeek Harness** | Current dsh session | Claude | DeepSeek host (direct) | Fresh Claude session |
 
-The table above shows defaults. Plan review and final inspection can select different agents with `reviewer` and `inspector`; builder selection does not change the plan reviewer.
+The table above shows defaults. Plan review and final inspection can select different agents with `reviewer` and `inspector`; builder selection does not change the plan reviewer. From a DeepSeek Harness (`dsh`) session, Claude, Codex and Antigravity can each review the plan or inspect the code; DeepSeek cannot review the plan it authored.
 
 | Agent | Host / planner | Plan review | Build | Code inspection | Research panel |
 |---|---|---|---|---|---|
 | Claude Code (`claude`) | Yes | Repository-aware | Yes | Yes | Web and repo |
 | Codex (`codex`) | Yes | Repository-aware | Yes | Yes | Web only |
-| DeepSeek Harness (`deepseek`, CLI `dsh`) | No runner host support | Opt-in, repository-aware | No | Opt-in | No |
-| Antigravity (`agy`) | No runner host support | Plan body only; cannot approve a build | No | No | Web only |
+| DeepSeek Harness (`deepseek`, CLI `dsh`) | Yes, from a dsh session | Opt-in, repository-aware | Host-direct only | Opt-in, repository-aware | No |
+| Antigravity (`agy`) | No | Repository snapshot, opt-in | No | Repository snapshot, opt-in | Web only |
 
-`claudex-plan` can be used by an agent that can read the project and write the plan. Runner-certified review/build orchestration currently supports Claude Code and Codex hosts. Skills alone do not add host or CLI capabilities. See [the role contract](skills/claudex-loop/references/roles.md) for constraints and per-provider model settings.
+`claudex-plan` can be used by an agent that can read the project and write the plan. Runner-certified review/inspection orchestration supports Claude Code, Codex and DeepSeek Harness hosts. A DeepSeek host implements directly in its own session; the runner has no delegated `dsh` build adapter, so `build` mode accepts only `builder=claude` or `builder=codex`. Skills alone do not add host or CLI capabilities. See [the role contract](skills/claudex-loop/references/roles.md) for constraints and per-provider model settings.
 
-Choose either builder with `builder=claude` or `builder=codex`. The default inspector follows the builder choice; an explicit inspector is selected independently and must differ from the builder. If the default Claude/Codex provider is unavailable because of quota, authentication, a missing CLI, service failure or timeout, the loop automatically starts a fresh same-provider reviewer and labels the result `degraded_same_provider`. If the coordinator takes over fixes, those new edits need another independent inspection. With mixed authorship, the log records who wrote and reviewed each part.
+Choose a delegated builder with `builder=claude` or `builder=codex`; a DeepSeek host may instead build directly, in which case `builder=deepseek` is recorded so the inspector cannot be DeepSeek itself. The default inspector follows the builder choice; an explicit inspector is selected independently and must differ from the builder. If the default Claude/Codex provider is unavailable because of quota, authentication, a missing CLI, service failure or timeout, the loop automatically starts a fresh same-provider reviewer and labels the result `degraded_same_provider`. There is no automatic fallback to a DeepSeek host or builder: select another explicit non-host agent and record the switch. If the coordinator takes over fixes, those new edits need another independent inspection. With mixed authorship, the log records who wrote and reviewed each part.
 
 Model choices remain configurable. Use **Claude Fable 5.1** and **GPT-6 Astra** when selected and available on your accounts, or retain each CLI's configured model. The host UI selection does not automatically change the other CLI's configuration. Requested and observed model information is recorded separately. Fallback is never silent: both attempts, the trigger and the reduced assurance are recorded.
 
@@ -86,7 +87,7 @@ When a research skill pack such as CCFA (`ccf-*`) is installed, Claudex Loop jud
 
 ## Install
 
-Install and authenticate the CLIs used by your selected delegated roles. Planning alone requires no CLI; default Claude/Codex review and inspection require the opposite CLI. Python **3.10+** runs the shared adapter; no runtime pip packages or separate API keys are required. Check `codex --version`, `codex login status`, `claude --version` and `claude auth status`. See the [runtime reference](skills/claudex-loop/references/runtime.md) for tested CLI versions and permission boundaries.
+Install and authenticate the CLIs used by your selected delegated roles. Planning alone requires no CLI; default Claude/Codex review and inspection require the opposite CLI. A DeepSeek Harness host uses its own `dsh` session plus the CLIs for the selected review/inspection agents. Python **3.10+** runs the shared adapter; no runtime pip packages or separate API keys are required. Check `codex --version`, `codex login status`, `claude --version`, `claude auth status` and `dsh --version`. See the [runtime reference](skills/claudex-loop/references/runtime.md) for tested CLI versions and permission boundaries.
 
 ### Claude Code plugin
 
@@ -101,7 +102,7 @@ Use `/claudex-loop:claudex-route` for a lightweight recommendation or one-off ha
 
 Clone this repository and copy all skill directories together. Planning and review skills share references and the runtime inside `claudex-loop`; copy these together. The compatibility commands also require the shared skills. `claudex-route` can also be installed on its own.
 
-To install **only Claudex Route**, copy `skills/claudex-route/` into `~/.agents/skills/` for Codex or `~/.claude/skills/` for Claude Code. No other skill from this repository is required. The commands below install the complete collection into both hosts.
+To install **only Claudex Route**, copy `skills/claudex-route/` into `~/.agents/skills/` for Codex or DeepSeek Harness, or `~/.claude/skills/` for Claude Code. No other skill from this repository is required. The commands below install the complete collection into both hosts and the shared agent root that DeepSeek Harness scans.
 
 ```bash
 # macOS / Linux — run from this repository
@@ -117,7 +118,7 @@ Copy-Item -Recurse -Force skills\* "$env:USERPROFILE\.agents\skills\"
 Copy-Item -Recurse -Force skills\* "$env:USERPROFILE\.claude\skills\"
 ```
 
-Open a new session to pick up the skills. In Codex, invoke `$claudex-plan` for plan authoring, `$claudex-review` for review, `$claudex-route` for routing, or `$claudex-loop` for the full workflow. In Claude Code, invoke `/claudex-plan`, `/claudex-review`, `/claudex-route` or `/claudex-loop` after manual installation. Updates are `git pull` and re-copy. A `.codex-plugin/plugin.json` is also supplied for Codex plugin packaging; manual skill installation does not require adding a marketplace.
+Open a new session to pick up the skills. In Codex, invoke `$claudex-plan` for plan authoring, `$claudex-review` for review, `$claudex-route` for routing, or `$claudex-loop` for the full workflow. In Claude Code, invoke `/claudex-plan`, `/claudex-review`, `/claudex-route` or `/claudex-loop` after manual installation. In DeepSeek Harness, its default profiles (for example `web` and `tui`) discover the same `~/.agents/skills` root; ask it to use `claudex-plan`, `claudex-review` or `claudex-loop`, and it resolves `--host deepseek`. No separate dsh plugin manifest is supplied. Updates are `git pull` and re-copy. A `.codex-plugin/plugin.json` is also supplied for Codex plugin packaging; manual skill installation does not require adding a marketplace.
 
 ### Examples
 
@@ -133,7 +134,7 @@ claudex this feature, reviewer=deepseek, builder=codex, inspector=agy
 claudex-review: kind=code, plan=docs/feature.md, builder=claude, inspector=deepseek, base=<commit>
 ```
 
-Use your actual host. An explicit reviewer must differ from the host; an explicit inspector must differ from the builder. DeepSeek and Antigravity require repository-specific opt-in. When omitted, reviewers follow the Claude/Codex defaults above. `claudex-plan` stops after writing; `claudex-review` starts from existing material. The same two skills serve every supported agent combination. `codex-review` remains an explicit Codex review command; `codex-build` remains an explicit Codex builder command. For a full composed workflow, use `claudex-loop`.
+From a DeepSeek Harness session, the same workflow uses `host=deepseek`; for example `claudex this feature, reviewer=codex, inspector=agy` delegates both reviews while the dsh host plans and implements. Use your actual host. An explicit reviewer must differ from the host; an explicit inspector must differ from the builder. DeepSeek and Antigravity require repository-specific opt-in. When omitted, reviewers follow the defaults above. `claudex-plan` stops after writing; `claudex-review` starts from existing material. The same two skills serve every supported agent combination. `codex-review` remains an explicit Codex review command; `codex-build` remains an explicit Codex builder command. For a full composed workflow, use `claudex-loop`.
 
 ## Controls
 
@@ -142,9 +143,9 @@ Use your actual host. An explicit reviewer must differ from the host; an explici
 | `mode` | `full` | `plan` stops after authoring; `review` starts from an existing plan |
 | `plan` / `PLAN_FILE` | `docs/exec-plans/active/<date>-<slug>.md` | Plan path, carried through every phase; a generated default gets a suffix rather than overwriting, while a path you supply is used as given |
 | `log` / `LOG_FILE` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only decision log, kept beside its plan |
-| `builder` | current host | `claude` or `codex` |
-| `reviewer` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--reviewer` |
-| `inspector` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--inspector` |
+| `builder` | current host | `claude` or `codex` for a delegated runner build; `deepseek` only for the active DeepSeek host building directly |
+| `reviewer` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--reviewer`. Must differ from the host, so a DeepSeek host reviews through Claude, Codex or Antigravity |
+| `inspector` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--inspector`. Must differ from the builder |
 | `reviewer_model`, `builder_model`, `inspector_model` | each CLI's configuration | Explicit per-role model override |
 | `reviewer_effort`, `builder_effort`, `inspector_effort` | each CLI's configuration | Explicit supported reasoning effort |
 | `rounds` / `MAX_ROUNDS` | `20` | Completed plan-review round cap |
@@ -157,11 +158,11 @@ Use your actual host. An explicit reviewer must differ from the host; an explici
 
 ## Research panel
 
-`panel` mode fans research out to fresh, read-only workers from the other provider. From a Codex host: Claude web workers that never see the repository, and Claude repo workers confined to it by `--restricted`. From a Claude host: web-only Codex workers with shell, file-viewing and connector tools disabled. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
+`panel` mode fans research out to fresh, read-only workers from a non-host provider. From a Codex host: Claude web workers that never see the repository, and Claude repo workers confined to it by `--restricted`. From a Claude host: web-only Codex workers with shell, file-viewing and connector tools disabled. From a DeepSeek host: Claude workers by default, with the same confinement. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
 
-Each panel worker can also select a non-host `provider`, including Google's Antigravity CLI (`agy`) for `kind: web`. agy uses isolated, manually logged-in `HOME` profiles (one for web workers, an offline one for plan and code reviews), Gemini models only, and a full-transcript tool audit. Its citations require text returned by `read_url_content` for the exact URL. `review --reviewer agy` and `inspect --inspector agy --base COMMIT` work from either Claude Code or Codex. They send the plan and a repository text snapshot through stdin, plus the diff and change manifest for inspection, with no file or network tools. Results record `cross_provider` and snapshot limitations; plan approvals can gate builds. Legacy plan-body-only approvals remain ineligible. Requests above 1,000,000 UTF-8 bytes are refused without truncation; binary contents, symlink targets and ignored files require separate evidence. This sends all included repository text to the Gemini model, so select agy only with repository-specific opt-in. Run `runner.py agy-profile` to create both profiles and see the manual login commands. The live permission canary passed; the snapshot review path is covered by fake-CLI tests and awaits a live model check; see [validation](VALIDATION.md) before use.
+Each panel worker can also select a non-host `provider`, including Google's Antigravity CLI (`agy`) for `kind: web`. agy uses isolated, manually logged-in `HOME` profiles (one for web workers, an offline one for plan and code reviews), Gemini models only, and a full-transcript tool audit. Its citations require text returned by `read_url_content` for the exact URL. `review --reviewer agy` and `inspect --inspector agy --base COMMIT` work from any supported host, including DeepSeek Harness. They send the plan and a repository text snapshot through stdin, plus the diff and change manifest for inspection, with no file or network tools. Results record `cross_provider` and snapshot limitations; plan approvals can gate builds. Legacy plan-body-only approvals remain ineligible. Requests above 1,000,000 UTF-8 bytes are refused without truncation; binary contents, symlink targets and ignored files require separate evidence. This sends all included repository text to the Gemini model, so select agy only with repository-specific opt-in. Run `runner.py agy-profile` to create both profiles and see the manual login commands. The live permission canary passed; the snapshot review path is covered by fake-CLI tests and awaits a live model check; see [validation](VALIDATION.md) before use.
 
-DeepSeek can be an opt-in plan reviewer or final inspector through the DeepSeek Harness CLI (`dsh`): `runner.py review --host claude --provider deepseek --repo . --plan PLAN` (or `inspect ... --provider deepseek --base COMMIT`). The plan and every file it reads go to the DeepSeek API, so use it only on repositories you may share. The runner removes dsh's shell, web and delegation tools, audits every tool call and the working tree after the run, and rejects any verdict from a run that stepped outside the repository. Windows is not supported yet.
+DeepSeek Harness can host the loop from a `dsh` session (`--host deepseek`), or serve as an opt-in plan reviewer/final inspector from a Claude or Codex host (`--provider deepseek`). Installation is the shared `~/.agents/skills` copy; dsh's default profiles discover it. A dsh host plans and may implement directly with its normal tools, but the runner's `build` mode refuses `--builder deepseek`: delegate with `--builder claude|codex`, or build in the host session and record `builder=deepseek` for a fresh Claude, Codex or Antigravity inspection. From a DeepSeek host, select the plan reviewer with `--reviewer claude|codex|agy` and the inspector with `--inspector claude|codex|agy`; DeepSeek cannot review its own plan. The plan and every file it reads go to the selected provider's API. The runner strips the host's dsh session/profile controls before launching a dsh reviewer, removes dsh's shell, web and delegation tools, audits every tool call and the working tree, and rejects any verdict from a run that stepped outside the repository. Windows is not supported for dsh reviewer runs.
 
 ## What an approval means
 

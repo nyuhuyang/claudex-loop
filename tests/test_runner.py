@@ -384,10 +384,18 @@ class RunnerTests(unittest.TestCase):
     def test_host_role_defaults_and_builder_override(self):
         self.assertEqual(runner.resolve_roles("claude")["reviewer"], "codex")
         self.assertEqual(runner.resolve_roles("codex")["reviewer"], "claude")
+        self.assertEqual(runner.resolve_roles("deepseek"),
+                         {"host": "deepseek", "planner": "deepseek", "reviewer": "claude",
+                          "builder": "deepseek", "inspector": "claude"})
         roles = runner.resolve_roles("codex", builder="claude")
         self.assertEqual((roles["planner"], roles["builder"], roles["inspector"]), ("codex", "claude", "codex"))
+        roles = runner.resolve_roles("deepseek", reviewer="agy", builder="codex")
+        self.assertEqual((roles["reviewer"], roles["builder"], roles["inspector"]), ("agy", "codex", "claude"))
+        self.assertEqual(runner.resolve_roles("deepseek", builder="claude")["inspector"], "codex")
         with self.assertRaises(runner.RunError):
             runner.resolve_roles("codex", "codex")
+        with self.assertRaisesRegex(runner.RunError, "only as the active host"):
+            runner.resolve_roles("claude", builder="deepseek")
 
     def test_roles_command_reports_independent_selections_and_rejects_self_review(self):
         with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -426,6 +434,69 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual(build["provider"], "codex")
         self.assertEqual(build["roles"], review["roles"])
+
+    def test_deepseek_host_uses_claude_codex_or_agy_for_review_and_inspection(self):
+        code, review, approval, error = self.invoke("deepseek")
+        self.assertEqual(code, 0, error)
+        self.assertEqual(review["roles"]["host"], "deepseek")
+        self.assertEqual((review["provider"], review["roles"]["reviewer"]), ("claude", "claude"))
+        self.assertEqual(review["assurance"], "cross_provider")
+        code, _, _, error = self.invoke("deepseek", mode="check",
+                                        extra=("--approval", str(approval)))
+        self.assertEqual(code, 0, error)
+        with self.assertRaises(runner.RunError):
+            runner.check_approval(review, self.plan, self.repo, "claude")
+
+        for reviewer, inspector in (("codex", "claude"), ("claude", "codex")):
+            with self.subTest(reviewer=reviewer, inspector=inspector):
+                selection = ("--reviewer", reviewer, "--inspector", inspector)
+                code, reviewed, _, error = self.invoke("deepseek", extra=selection)
+                self.assertEqual(code, 0, error)
+                self.assertEqual(reviewed["provider"], reviewer)
+                code, inspected, _, error = self.invoke(
+                    "deepseek", mode="inspect", extra=selection + ("--base", self.base))
+                self.assertEqual(code, 0, error)
+                self.assertEqual((inspected["provider"], inspected["roles"]["inspector"]),
+                                 (inspector, inspector))
+                self.assertEqual(inspected["roles"]["builder"], "deepseek")
+
+        code, _, build_approval, error = self.invoke(
+            "deepseek", extra=("--reviewer", "claude", "--builder", "codex"))
+        self.assertEqual(code, 0, error)
+        code, build, _, error = self.invoke(
+            "deepseek", mode="build", case="build",
+            extra=("--builder", "codex", "--approval", str(build_approval), "--proof", "true"))
+        self.assertEqual(code, 0, error)
+        self.assertEqual((build["provider"], build["roles"]["builder"]), ("codex", "codex"))
+
+    def test_deepseek_host_refuses_self_review_and_delegated_deepseek_build(self):
+        cases = (("review", ("--reviewer", "deepseek"), "must differ from the planner"),
+                 ("inspect", ("--inspector", "deepseek", "--base", self.base),
+                  "must differ from the builder"))
+        for mode, extra, message in cases:
+            with self.subTest(mode=mode):
+                code, record, _, error = self.invoke("deepseek", mode=mode, extra=extra)
+                self.assertEqual((code, record), (1, None))
+                self.assertIn(message, error)
+        code, record, _, error = self.invoke(
+            "deepseek", mode="build",
+            extra=("--builder", "deepseek", "--unreviewed-spec", "--proof", "true"))
+        self.assertEqual((code, record), (1, None))
+        self.assertIn("not a runner build target", error)
+
+    def test_deepseek_host_has_no_automatic_fallback_to_itself(self):
+        code, failed, primary, error = self.invoke("deepseek", case="quota")
+        self.assertEqual(code, 1, error)
+        self.assertEqual((failed["failure_kind"], failed["fallback_eligible"]),
+                         ("provider_unavailable", True))
+        code, record, _, error = self.invoke(
+            "deepseek", extra=("--provider", "deepseek", "--fallback-from", str(primary)))
+        self.assertEqual((code, record), (1, None))
+        self.assertIn("no automatic same-provider fallback", error)
+        code, record, _, error = self.invoke(
+            "deepseek", extra=("--provider", "claude", "--fallback-from", str(primary)))
+        self.assertEqual((code, record), (1, None))
+        self.assertIn("no automatic same-provider fallback", error)
 
     def test_role_conflicts_and_self_review_are_rejected_before_launch(self):
         cases = (("review", ("--reviewer", "deepseek", "--provider", "codex")),
@@ -950,6 +1021,13 @@ class PanelTests(unittest.TestCase):
         self.assertEqual(record["provider"], "claude")
         self.assertEqual({w["provider"] for w in record["workers"]}, {"claude"})
         self.assertEqual(record["roles"]["reviewer"], "deepseek")
+
+    def test_deepseek_host_defaults_to_claude_panel_workers(self):
+        code, record, _, error = self.launch(host="deepseek")
+        self.assertEqual(code, 0, (record, error))
+        self.assertEqual(record["provider"], "claude")
+        self.assertEqual({w["provider"] for w in record["workers"]}, {"claude"})
+        self.assertEqual(record["roles"]["host"], "deepseek")
 
     def test_launch_requires_matching_payload_digest(self):
         path = self.root / "panel.json"
@@ -1727,9 +1805,11 @@ class AgyTests(unittest.TestCase):
         self.assertFalse(failed["fallback_eligible"])
         self.assertIn("different conversation", failed["error"])
 
-    def test_both_hosts_can_select_agy_for_both_review_roles(self):
+    def test_all_hosts_can_select_agy_for_both_review_roles(self):
         for host in runner.HOSTS:
             for builder in runner.BUILDERS:
+                if builder == "deepseek" and host != "deepseek":
+                    continue
                 with self.subTest(host=host, builder=builder):
                     selection = ("--reviewer", "agy", "--builder", builder, "--inspector", "agy")
                     code, review, _, error = self.call("review", host=host, provider=None, extra=selection)
@@ -2093,9 +2173,13 @@ class DeepSeekTests(unittest.TestCase):
         argv = json.loads((self.fake / "argv.json").read_text())
         self.assertEqual(argv[1:4], ["--profile", "headless", "--patch"])
         self.assertEqual(argv[-2:], ["--json", "-"])
-        self.assertEqual(json.loads((self.fake / "env.json").read_text()),
+        env = json.loads((self.fake / "env.json").read_text())
+        self.assertEqual({key: env[key] for key in
+                          ("DSH_PERMISSION_MODE", "DSH_TOOLS_MODE", "DSH_TELEMETRY_MODE")},
                          {"DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
                           "DSH_TELEMETRY_MODE": "DISABLED"})
+        for key in ("DSH_SESSION_ID", "DSH_PROFILE", "DSH_PROFILE_DIR", "DSH_SHELL"):
+            self.assertNotIn(key, env)
         patch_text = (self.fake / "patch.yml").read_text()
         self.assertEqual(patch_text.count("disabled: true"), len(runner.DSH_DISABLE))
         for entry in ("tool-working-directory", "web-deepseek-api"):
@@ -2115,9 +2199,25 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual((record["roles"]["inspector"], record["provider"]), ("deepseek", "deepseek"))
         self.assertIsNotNone(record["snapshot"])
 
+    def test_reviewer_environment_drops_host_session_controls(self):
+        ambient = {"DSH_SESSION_ID": "session-host", "DSH_PROFILE": "web",
+                   "DSH_PROFILE_DIR": "/tmp/host-profile", "DSH_SHELL": "1",
+                   "DSH_TOOLS_MODE": "dangerous", "DSH_HOME": str(self.root / "dsh-home")}
+        with patch.dict(os.environ, ambient):
+            code, record, _, error = self.call()
+        self.assertEqual(code, 0, error)
+        env = json.loads((self.fake / "env.json").read_text())
+        for key in ("DSH_SESSION_ID", "DSH_PROFILE", "DSH_PROFILE_DIR", "DSH_SHELL"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["DSH_HOME"], ambient["DSH_HOME"])
+        self.assertEqual({key: env[key] for key in
+                          ("DSH_PERMISSION_MODE", "DSH_TOOLS_MODE", "DSH_TELEMETRY_MODE")},
+                         {"DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
+                          "DSH_TELEMETRY_MODE": "DISABLED"})
+
     def test_explicit_roles_select_deepseek_without_execution_override(self):
-        for host in runner.HOSTS:
-            for builder in runner.BUILDERS:
+        for host in runner.PROVIDERS:
+            for builder in runner.PROVIDERS:
                 with self.subTest(host=host, builder=builder):
                     selection = ("--reviewer", "deepseek", "--builder", builder, "--inspector", "deepseek")
                     code, review, approval, error = self.call(host=host, provider=None, extra=selection)
@@ -2304,8 +2404,11 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual(runner.resolve_roles("claude", inspector="deepseek")["inspector"], "deepseek")
         with self.assertRaises(runner.RunError):
             runner.resolve_roles("claude", builder="codex", inspector="codex")
+        self.assertEqual(runner.resolve_roles("deepseek"),
+                         {"host": "deepseek", "planner": "deepseek", "reviewer": "claude",
+                          "builder": "deepseek", "inspector": "claude"})
         with self.assertRaises(runner.RunError):
-            runner.resolve_roles("deepseek")
+            runner.resolve_roles("deepseek", reviewer="deepseek")
         with contextlib.redirect_stdout(io.StringIO()) as output:
             self.assertEqual(runner.main(["roles", "--host", "claude", "--provider", "deepseek"]), 0)
         self.assertEqual(json.loads(output.getvalue())["reviewer"], "deepseek")

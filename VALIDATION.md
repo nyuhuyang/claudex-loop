@@ -1,10 +1,18 @@
 # Validation — bidirectional loop
 
+## DeepSeek Harness host (2026-10-22, AGE-133 follow-up)
+
+On macOS with Python 3.11.10, `python3.11 -m unittest discover -s tests -v` completed 128 tests successfully (one Windows-only test skipped). `python3.11 scripts/validate.py` and `git diff --check` passed.
+
+Fake-CLI contract tests cover DeepSeek-host role defaults (`reviewer=claude`, `builder=deepseek`, `inspector=claude`), explicit Claude/Codex review and inspection, Agy review and inspection from a DeepSeek host through the existing all-host loop, delegated builds to Claude and Codex, refusal of `build --builder deepseek` and of a non-host DeepSeek builder, self-review and self-inspection refusal, refusal of an automatic fallback to a DeepSeek host or builder, and Claude panel-worker defaults from a DeepSeek host. They also verify that a dsh reviewer launched from a dsh host receives a fresh environment: `DSH_SESSION_ID`, `DSH_PROFILE`, `DSH_PROFILE_DIR`, `DSH_SHELL` and other session controls are dropped, while `DSH_HOME` is kept and the read-only tool/permission/telemetry settings are forced. Existing DeepSeek reviewer, Antigravity and approval-binding contracts remain in force.
+
+No live dsh-hosted loop or new live provider call was performed for this follow-up. DeepSeek host role routing, environment isolation and build refusal are contract-tested only; the live DeepSeek reviewer/inspection evidence below remains separate evidence for the dsh adapter.
+
 ## DeepSeek and Antigravity review roles (2026-10-22, AGE-133 follow-up)
 
 On macOS with Python 3.11.10, `python3.11 -m unittest discover -s tests -v` completed 123 tests successfully (one Windows-only test skipped). `python3.11 scripts/validate.py`, the skill-creator metadata checks for the three changed skill entry points, and `git diff --check` passed.
 
-Fake-CLI contract tests cover both Claude and Codex hosts, both builders, and explicit DeepSeek or Antigravity selection for plan review and code inspection. Antigravity now receives repository text snapshots through the existing offline profile, with the tracked diff and change manifest for inspection. Tests check staged, deleted and untracked content, unchanged repository context, context hashes, binary/symlink omissions, ignored-file exclusion, request-size rejection before launch, repository mutation on success and timeout, exact-session plan resume, fresh inspection sessions, approval checks, and rejection of legacy plan-body-only approval. The isolated profile and transcript audit remain in effect; neither provider gains host or builder support.
+Fake-CLI contract tests cover both Claude and Codex hosts, both builders, and explicit DeepSeek or Antigravity selection for plan review and code inspection. Antigravity now receives repository text snapshots through the existing offline profile, with the tracked diff and change manifest for inspection. Tests check staged, deleted and untracked content, unchanged repository context, context hashes, binary/symlink omissions, ignored-file exclusion, request-size rejection before launch, repository mutation on success and timeout, exact-session plan resume, fresh inspection sessions, approval checks, and rejection of legacy plan-body-only approval. The isolated profile and transcript audit remain in effect; at that point neither provider was a host or builder (DeepSeek host support was added in the section above).
 
 No live provider was launched for this follow-up. Antigravity's new snapshot review/inspection path is contract-tested, not yet live-model validated. Its earlier permission canary and DeepSeek's live review/inspection evidence below remain separate evidence. Antigravity requests are limited to 1,000,000 UTF-8 bytes with no truncation; ignored files, binary contents, symlink targets and runtime behavior require separate evidence. Submodules and special files are refused.
 

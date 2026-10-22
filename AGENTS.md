@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-This repository distributes skills for coordinating Claude Code and Codex.
+This repository distributes skills for coordinating Claude Code, Codex and DeepSeek Harness, with Antigravity as an opt-in reviewer/inspector.
 
 - `skills/claudex-loop/`: workflow instructions, references, and the standard-library runner in `scripts/runner.py`.
 - `skills/claudex-plan/` and `skills/claudex-review/`: separate plan-authoring and configurable review entry points, composed by `claudex-loop`; shared role capabilities live in `skills/claudex-loop/references/roles.md`.
@@ -36,7 +36,7 @@ Use `unittest`, files named `test_*.py`, and methods named `test_*`. Tests use d
 
 ## Review Fallback Invariants
 
-Cross-provider review remains preferred. Same-provider fallback requires a recorded `provider_unavailable` failure from quota, authentication, missing CLI, service failure, or timeout. Start fresh and record `assurance=degraded_same_provider`, source result, reason, and session state. `REVISE`, `BLOCKED`, malformed output, repository mutation, and user interruption are ineligible. Inspection fallback must match the failed base and code snapshot. A live coordinator is required; an exited host cannot transfer control. DeepSeek (`--provider deepseek`) is opt-in only and has no same-provider fallback in either direction: when it is unavailable, rerun with the default role; a `confinement_violation` is never fallback-eligible.
+Cross-provider review remains preferred. Same-provider fallback requires a recorded `provider_unavailable` failure from quota, authentication, missing CLI, service failure, or timeout. Start fresh and record `assurance=degraded_same_provider`, source result, reason, and session state. `REVISE`, `BLOCKED`, malformed output, repository mutation, and user interruption are ineligible. Inspection fallback must match the failed base and code snapshot. A live coordinator is required; an exited host cannot transfer control. DeepSeek (`--provider deepseek`) is opt-in only and has no same-provider fallback in either direction: when it is unavailable, rerun with the default role; a `confinement_violation` is never fallback-eligible. A DeepSeek host (`--host deepseek`) or DeepSeek builder has no automatic same-provider fallback either; select another explicit non-host agent and record the switch. The runner never delegates a build to `dsh`.
 
 ## Commit & Pull Request Guidelines
 

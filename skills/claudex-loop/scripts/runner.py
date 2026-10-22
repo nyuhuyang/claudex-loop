@@ -24,7 +24,10 @@ import uuid
 
 
 PROVIDERS = ("claude", "codex")
-HOSTS = BUILDERS = PROVIDERS
+# A dsh session can coordinate a loop, but the runner has no dsh build adapter: DeepSeek is a
+# host/planner and a review target, never a delegated build target.
+HOSTS = PROVIDERS + ("deepseek",)
+BUILDERS = HOSTS
 REVIEWERS = PROVIDERS + ("agy", "deepseek")
 INSPECTORS = REVIEWERS
 PANEL_WORKERS = PROVIDERS + ("agy",)
@@ -191,8 +194,12 @@ def resolve_roles(host: str, reviewer: str | None = None,
         raise RunError("Invalid host, reviewer, builder or inspector provider for this role.")
     reviewer = reviewer or next(p for p in PROVIDERS if p != host)
     if reviewer == host:
-        raise RunError("The plan reviewer must be the other provider. Change the host to swap roles.")
+        raise RunError("The plan reviewer must differ from the planner/host. "
+                       "Change the host to swap roles, or select another reviewer.")
     builder = builder or host
+    if builder == "deepseek" and host != "deepseek":
+        raise RunError("DeepSeek can build only as the active host session; select claude or "
+                       "codex as a delegated builder.")
     inspector = inspector or next(p for p in PROVIDERS if p != builder)
     if inspector == builder:
         raise RunError("The inspector must differ from the builder.")
@@ -312,6 +319,9 @@ def validate_fallback(path: Path, repo: Path, plan: Path, provider: str,
                        f"{'reviewer' if mode == 'review' else 'inspector'} instead.")
     expected_primary = roles["reviewer"] if mode == "review" else roles["inspector"]
     expected_fallback = roles["host"] if mode == "review" else roles["builder"]
+    if expected_fallback == "deepseek":
+        raise RunError("A DeepSeek host or builder has no automatic same-provider fallback; "
+                       "select another explicit non-host reviewer or inspector and record the switch.")
     checks = {
         "status": "failed", "mode": mode, "provider": expected_primary,
         "repo": str(repo), "plan": str(plan),
@@ -1673,8 +1683,14 @@ def dsh_check_config(prefix: list[str], run_dir: Path, repo: Path, env: dict) ->
 
 
 def dsh_env() -> dict:
-    return {**os.environ, "DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
-            "DSH_TELEMETRY_MODE": "DISABLED"}
+    # A dsh host exports its own profile/session controls. The reviewer must start as a fresh
+    # headless process, so keep only configuration roots and never inherit the host's session.
+    kept = {"DSH_HOME", "DSH_AGENTS_HOME"}
+    env = {key: value for key, value in os.environ.items()
+           if not key.startswith("DSH_") or key in kept}
+    env.update({"DSH_PERMISSION_MODE": "read-only", "DSH_TOOLS_MODE": "native",
+                "DSH_TELEMETRY_MODE": "DISABLED"})
+    return env
 
 
 def dsh_events(stdout: str, strict: bool = True) -> list:
@@ -2202,6 +2218,9 @@ def run(args) -> int:
         return 0
     provider = args.provider or (roles["builder"] if args.mode == "build" else
                                  roles["inspector"] if args.mode == "inspect" else roles["reviewer"])
+    if provider == "deepseek" and args.mode == "build":
+        raise RunError("DeepSeek is not a runner build target; implement in the DeepSeek host session "
+                       "or select --builder claude|codex for a delegated build.")
     if provider == "agy" and args.mode not in ("review", "inspect"):
         raise RunError("agy is available only for plan review, code inspection and web panel workers.")
     if provider == "agy" and args.fallback_from:
@@ -2212,6 +2231,9 @@ def run(args) -> int:
         if sys.platform == "win32":
             raise RunError("DeepSeek review is not validated on Windows.")
         if args.fallback_from:
+            if args.host == "deepseek":
+                raise RunError("A DeepSeek host has no automatic same-provider fallback; select "
+                               "another explicit non-host reviewer or inspector and record the switch.")
             raise RunError("DeepSeek has no same-provider fallback; rerun with the default "
                            f"{'reviewer' if args.mode == 'review' else 'inspector'} instead.")
         if args.effort:

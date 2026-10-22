@@ -15,7 +15,10 @@ The runner requires a clean checkout for delegated builds. Plan/log files writte
 ```text
 python RUNNER build --host claude --builder codex --repo PROJECT --plan PLAN_PATH --approval APPROVED_RESULT --proof "python -m unittest discover"
 python RUNNER build --host codex --builder claude --repo PROJECT --plan PLAN_PATH --approval APPROVED_RESULT --proof "npm test"
+python RUNNER build --host deepseek --builder claude --repo PROJECT --plan PLAN_PATH --approval APPROVED_RESULT --proof "npm test"
 ```
+
+A DeepSeek host implements directly in its `dsh` session instead of using the runner's `build` mode. The runner has no `dsh` build adapter: `build --builder deepseek` is refused. Implement in the host session, then pass `--builder deepseek` to the fresh inspection so the inspector differs from the author. Delegating from a DeepSeek host to `--builder claude|codex` uses the same runner path as the examples above.
 
 Codex builds with `workspace-write` and noninteractive approvals, not a global sandbox bypass. Claude builds with its normal configured permissions and `acceptEdits`; commands still requiring approval are denied in headless mode. Confirm any required proof-command permissions using the provider's supported configuration before launch. Never respond to a denial by silently turning on permission bypass. If the external builder cannot perform required work, report it or have the already-authorized host perform that portion and log authorship.
 
@@ -30,10 +33,12 @@ Read all changes relative to the pre-build commit, including staged changes, del
 ```text
 python RUNNER inspect --host claude --builder codex --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 python RUNNER inspect --host codex --builder claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
+python RUNNER inspect --host deepseek --builder deepseek --inspector claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
+python RUNNER inspect --host deepseek --builder deepseek --inspector agy --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 python RUNNER inspect --host codex --reviewer deepseek --builder codex --inspector claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 ```
 
-Use `--inspector` to select the code reviewer independently of the plan reviewer. Keep all explicit role flags on fallback launches; `--provider BUILDER` changes only the executing provider. DeepSeek and Antigravity inspection require repository-specific opt-in and have no same-provider fallback. Antigravity receives the repository text snapshot, manifest and diff through stdin using its offline review profile; it does not open files or execute proofs.
+Use `--inspector` to select the code reviewer independently of the plan reviewer. A DeepSeek host has no delegated `dsh` builder; it implements directly and then records `--builder deepseek` for inspection, so Claude, Codex or Antigravity supplies the independent review. Keep all explicit role flags on fallback launches; `--provider BUILDER` changes only the executing provider. DeepSeek and Antigravity inspection require repository-specific opt-in and have no same-provider fallback. Antigravity receives the repository text snapshot, manifest and diff through stdin using its offline review profile; it does not open files or execute proofs.
 
 If the selected other-provider inspector fails with `fallback_eligible=true`, immediately run a fresh same-provider inspection, unless `fallback=off` was selected:
 
@@ -42,7 +47,7 @@ python RUNNER inspect --host codex --builder codex --provider codex --repo PROJE
 python RUNNER inspect --host claude --builder claude --provider claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT --fallback-from FAILED_CODEX_RESULT
 ```
 
-The fallback result is `degraded_same_provider`. It is useful adversarial review from a clean context, but it is not cross-provider validation. The failed primary result must describe the same base commit and code snapshot; after any code change, try the primary inspector again before falling back. Preserve both attempt records and surface the primary failure and reduced assurance in the final report.
+The fallback result is `degraded_same_provider`. It is useful adversarial review from a clean context, but it is not cross-provider validation. The failed primary result must describe the same base commit and code snapshot; after any code change, try the primary inspector again before falling back. Preserve both attempt records and surface the primary failure and reduced assurance in the final report. A DeepSeek builder has no automatic same-provider fallback: if the selected inspector is unavailable, select another explicit non-host inspector and record the switch. A DeepSeek planner can still launch a builder-provider fallback when the builder is Claude or Codex.
 
 The runner supplies the tracked diff plus a manifest of all changed and untracked files. The reviewer must read added files, either through file tools or the supplied Antigravity repository snapshot. It fingerprints the inspected state and refuses approval if code changes during inspection. Ignored files are not enumerated by Git: inspect any ignored build deliverables separately. Changed submodules require an explicit inspection path rather than a silently incomplete diff.
 

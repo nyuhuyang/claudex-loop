@@ -5,7 +5,7 @@ description: "Gather requirements and write an execution plan with acceptance cr
 
 # Claudex Plan
 
-The current agent owns requirements and plan authoring. This stage does not depend on a particular reviewer, builder, or agent pair. Use the shared [planning reference](../claudex-loop/references/planning.md); install the sibling `claudex-loop` skill for its references.
+The current agent owns requirements and plan authoring. This stage does not depend on a particular reviewer, builder, or agent pair; Claude Code, Codex and DeepSeek Harness can host it. Use the shared [planning reference](../claudex-loop/references/planning.md); install the sibling `claudex-loop` skill for its references.
 
 Preserve `plan` / `PLAN_FILE` and `log` / `LOG_FILE`. Defaults are `docs/exec-plans/active/<date>-<slug>.md` and its sibling `<date>-<slug>.review-log.md`. Resolve both once. Add a numeric suffix when a generated default already exists; use an explicit path as supplied. Preserve existing content and authorization when revising a plan.
 

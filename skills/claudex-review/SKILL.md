@@ -7,18 +7,18 @@ description: "Review an existing plan or code changes through a selected agent, 
 
 The current conversation coordinates review; the selected agent performs it. Agent choices are parameters, so the same review workflow serves all supported combinations. Install the sibling `claudex-loop` skill for its shared runner and references.
 
-Read [the role contract](../claudex-loop/references/roles.md) and [runtime reference](../claudex-loop/references/runtime.md). Resolve the runner relative to that installed sibling skill, never the reviewed repository. Use the actual host. Preserve `plan` / `PLAN_FILE`, `log` / `LOG_FILE`, user authorization and explicit models; do not silently substitute `PLAN.md`.
+Read [the role contract](../claudex-loop/references/roles.md) and [runtime reference](../claudex-loop/references/runtime.md). Resolve the runner relative to that installed sibling skill, never the reviewed repository. Use the actual host: `claude`, `codex`, or `deepseek` in a DeepSeek Harness session. A DeepSeek host defaults to Claude review and inspection and may implement directly; the runner never delegates a build to `dsh`, so `build` mode accepts only `builder=claude|codex`. Preserve `plan` / `PLAN_FILE`, `log` / `LOG_FILE`, user authorization and explicit models; do not silently substitute `PLAN.md`.
 
 | Input | Default | Contract |
 |---|---|---|
 | `kind` | `plan` | `plan` reviews an existing plan; `code` inspects changes against it |
-| `reviewer` | `default` | Plan-review agent; `claude`, `codex`, `deepseek`, `agy` within role constraints |
-| `builder` | actual host | Code author: `claude` or `codex` |
+| `reviewer` | `default` | Plan-review agent; `claude`, `codex`, `deepseek`, `agy` within role constraints. A DeepSeek host uses Claude, Codex or Antigravity |
+| `builder` | actual host | Code author: `claude` or `codex` for a delegated build; `deepseek` only when the active DeepSeek host authored the code directly |
 | `inspector` | `default` | Code-review agent; `claude`, `codex`, `deepseek`, `agy` within role constraints |
 | `rounds` / `MAX_ROUNDS` | `20` | Completed plan-review round cap |
 | `MAX_INSPECTION_ROUNDS` | `20` | Initial code inspection plus fresh reinspections |
 | `MAX_FIX_ROUNDS` | `20` | Authorized build-fix attempts; review alone does not authorize code edits |
-| `fallback` | `same-provider-on-unavailable` | Recorded eligible failure required; `off` disables |
+| `fallback` | `same-provider-on-unavailable` | Recorded eligible failure required; `off` disables. A DeepSeek host or builder has no automatic fallback |
 
 Echo actual roles, resolved paths, round limits, model requests and fallback policy. Settle [the launch budget](../claudex-loop/references/budget.md) before a CLI launch. Review existing material directly; fill only material gaps and do not restart requirements gathering. If no log is supplied, create an append-only log beside the plan with a collision-safe suffix; never overwrite an earlier transcript.
 

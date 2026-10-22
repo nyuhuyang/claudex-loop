@@ -5,6 +5,7 @@
 This repository distributes skills for coordinating Claude Code and Codex.
 
 - `skills/claudex-loop/`: workflow instructions, references, and the standard-library runner in `scripts/runner.py`.
+- `skills/claudex-plan/` and `skills/claudex-review/`: separate plan-authoring and configurable review entry points, composed by `claudex-loop`; shared role capabilities live in `skills/claudex-loop/references/roles.md`.
 - `skills/claudex-route/`: independent routing skill; `skills/codex-review/` and `skills/codex-build/`: compatibility commands using the shared workflow.
 - `tests/test_runner.py`: runner contract tests; `scripts/validate.py`: metadata, link, manifest and active-plan checkbox validation.
 - `.claude-plugin/` and `.codex-plugin/`: distribution manifests; `assets/`: README SVGs; `legacy/`: historical skills and notices.

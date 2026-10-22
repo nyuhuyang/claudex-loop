@@ -1,31 +1,44 @@
 <div align="center">
 <img src="assets/logo.svg" alt="CLAUDEX LOOP" width="719">
 
-### Skills for working across Claude Code and Codex.
+### Composable planning and review across agents.
 
 [![Stars](https://img.shields.io/github/stars/chaseai-yt/claudex-loop?style=flat&color=e8590c)](https://github.com/chaseai-yt/claudex-loop/stargazers)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 </div>
 
-This repository contains separate skills for choosing a model, making a one-off handoff, and running a complete development workflow. They share a repository and plugin distribution; **Claudex Route is independent of the Claudex Loop workflow**.
+This repository separates plan authoring, agent review, task routing, and the complete development workflow. Choose agents by role instead of installing a skill for each pair. They share a repository and plugin distribution; **Claudex Route is independent of the Claudex Loop workflow**.
 
 | Skill | Use it for | Dependencies |
 |---|---|---|
 | [`claudex-route`](skills/claudex-route/SKILL.md) | A model recommendation or one scoped handoff | Self-contained; selected CLI needed only for delegation |
-| [`claudex-loop`](skills/claudex-loop/SKILL.md) | Requirements, plan review, implementation, and final inspection | Both CLIs and Python 3.10+ |
-| [`codex-review`](skills/codex-review/SKILL.md) | Explicit Codex plan-review compatibility command | Shared `claudex-loop` skill |
-| [`codex-build`](skills/codex-build/SKILL.md) | Explicit Codex builder compatibility command | Shared `claudex-loop` skill |
+| [`claudex-plan`](skills/claudex-plan/SKILL.md) | Requirements and plan authoring, without launching review or implementation | Shared `claudex-loop` references; no CLI for planning alone |
+| [`claudex-review`](skills/claudex-review/SKILL.md) | Review an existing plan or code changes with the selected agent | Shared runner, Python 3.10+, selected CLI |
+| [`claudex-loop`](skills/claudex-loop/SKILL.md) | Compose planning, review, authorized implementation, and final inspection | Python 3.10+ and CLIs for the selected delegated roles |
+| [`codex-review`](skills/codex-review/SKILL.md) | Explicit Codex plan-review compatibility command | Shared `claudex-loop` and `claudex-review` skills |
+| [`codex-build`](skills/codex-build/SKILL.md) | Explicit Codex builder compatibility command | Shared `claudex-loop` and `claudex-review` skills |
 
 ## Claudex Loop
 
-Claudex Loop gives a plan an independent review before implementation, then gives the code an independent inspection. Your current conversation handles requirements and coordination; the other provider challenges the plan with concrete evidence. The host arbitrates findings, records decisions, and keeps the loop bounded.
+Claudex Loop gives a plan an independent review before implementation, then gives the code an independent inspection. Your current conversation handles requirements and coordination; the selected reviewer challenges the plan with concrete evidence. The host arbitrates findings, records decisions, and keeps the loop bounded.
 
 | Start here | Requirements and plan | Plan review | Default build | Final inspection |
 |---|---|---|---|---|
 | **Claude Code** | Current Claude session | Codex | Claude | Fresh Codex session |
 | **Codex** | Current Codex session | Claude | Codex | Fresh Claude session |
 
-Choose either builder with `builder=claude` or `builder=codex`. The inspector follows the builder choice and first uses the other provider. If that provider is unavailable because of quota, authentication, a missing CLI, service failure or timeout, the loop automatically starts a fresh same-provider reviewer and labels the result `degraded_same_provider`. If the coordinator takes over fixes, those new edits need another independent inspection. With mixed authorship, the log records who wrote and reviewed each part.
+The table above shows defaults. Plan review and final inspection can select different agents with `reviewer` and `inspector`; builder selection does not change the plan reviewer.
+
+| Agent | Host / planner | Plan review | Build | Code inspection | Research panel |
+|---|---|---|---|---|---|
+| Claude Code (`claude`) | Yes | Repository-aware | Yes | Yes | Web and repo |
+| Codex (`codex`) | Yes | Repository-aware | Yes | Yes | Web only |
+| DeepSeek Harness (`deepseek`, CLI `dsh`) | No runner host support | Opt-in, repository-aware | No | Opt-in | No |
+| Antigravity (`agy`) | No runner host support | Plan body only; cannot approve a build | No | No | Web only |
+
+`claudex-plan` can be used by an agent that can read the project and write the plan. Runner-certified review/build orchestration currently supports Claude Code and Codex hosts. Skills alone do not add host or CLI capabilities. See [the role contract](skills/claudex-loop/references/roles.md) for constraints and per-provider model settings.
+
+Choose either builder with `builder=claude` or `builder=codex`. The default inspector follows the builder choice; an explicit inspector is selected independently and must differ from the builder. If the default Claude/Codex provider is unavailable because of quota, authentication, a missing CLI, service failure or timeout, the loop automatically starts a fresh same-provider reviewer and labels the result `degraded_same_provider`. If the coordinator takes over fixes, those new edits need another independent inspection. With mixed authorship, the log records who wrote and reviewed each part.
 
 Model choices remain configurable. Use **Claude Fable 5.1** and **GPT-6 Astra** when selected and available on your accounts, or retain each CLI's configured model. The host UI selection does not automatically change the other CLI's configuration. Requested and observed model information is recorded separately. Fallback is never silent: both attempts, the trigger and the reduced assurance are recorded.
 
@@ -49,19 +62,19 @@ Claudex Route runs independently. Use **Claudex Loop** when you want repeated pl
 flowchart LR
     R[Host scouts code and context] --> Q[Settle material decisions]
     Q --> P[Write plan and acceptance checks]
-    P --> V[Other provider reviews]
+    P --> V[Selected reviewer reviews]
     V -- Revise --> A[Host arbitrates and updates]
     A --> V
     V -- Approved --> B[Authorized builder implements]
     B --> T[Run proof checks]
-    T --> I[Other provider inspects final code]
+    T --> I[Selected inspector reviews final code]
     I --> H[Present diff and remaining findings]
 ```
 
 1. **Recon:** inspect existing code and relevant docs, or research greenfield assumptions. Present an assumptions ledger with sources.
 2. **Requirements:** resolve decisions that change the outcome. Batch independent questions, preserve user intent, and write a plan with observable acceptance criteria and proof commands.
-3. **Plan review:** the other provider reads the plan and relevant code, returns evidence-backed findings, and revisits revisions in the same session. Stop at the round budget or an explicit verdict: `APPROVED`, `REVISE`, or `BLOCKED`.
-4. **Build and inspect:** once implementation is authorized, the selected builder works from the plan. Independently run proof checks and inspect the final changes with the other provider in a fresh session.
+3. **Plan review:** the selected reviewer reads the plan and relevant code, returns evidence-backed findings, and revisits revisions in the same session. Stop at the round budget or an explicit verdict: `APPROVED`, `REVISE`, or `BLOCKED`.
+4. **Build and inspect:** once implementation is authorized, the selected builder works from the plan. Independently run proof checks and inspect the final changes with the selected inspector in a fresh session.
 
 The user controls consequential decisions and authorization. A request to review a plan does not authorize implementation. A request to plan and implement does not need redundant build approval. Commits, pushes and publication follow the user's existing instructions.
 
@@ -73,7 +86,7 @@ When a research skill pack such as CCFA (`ccf-*`) is installed, Claudex Loop jud
 
 ## Install
 
-Both CLIs must be installed and authenticated for the full cross-provider workflow. Python **3.10+** runs the shared adapter; no runtime pip packages or separate API keys are required. Check `codex --version`, `codex login status`, `claude --version` and `claude auth status`. See the [runtime reference](skills/claudex-loop/references/runtime.md) for tested CLI versions and permission boundaries.
+Install and authenticate the CLIs used by your selected delegated roles. Planning alone requires no CLI; default Claude/Codex review and inspection require the opposite CLI. Python **3.10+** runs the shared adapter; no runtime pip packages or separate API keys are required. Check `codex --version`, `codex login status`, `claude --version` and `claude auth status`. See the [runtime reference](skills/claudex-loop/references/runtime.md) for tested CLI versions and permission boundaries.
 
 ### Claude Code plugin
 
@@ -82,11 +95,11 @@ Both CLIs must be installed and authenticated for the full cross-provider workfl
 /plugin install claudex-loop@claudex-loop
 ```
 
-Use `/claudex-loop:claudex-route` for a lightweight recommendation or one-off handoff, or `/claudex-loop:claudex-loop`, `/claudex-loop:codex-review`, or `/claudex-loop:codex-build` for the existing workflows. Enable marketplace auto-update in the plugin menu if desired.
+Use `/claudex-loop:claudex-route` for a lightweight recommendation or one-off handoff, or `/claudex-loop:claudex-plan` for plan authoring, `/claudex-loop:claudex-review` for configurable review, or `/claudex-loop:claudex-loop` for the complete workflow. `/claudex-loop:codex-review` and `/claudex-loop:codex-build` remain compatibility commands. Enable marketplace auto-update in the plugin menu if desired.
 
 ### Codex or manual skill installation
 
-Clone this repository and copy all skill directories together. The compatibility commands share the runtime inside `claudex-loop`; copying an alias alone is insufficient. `claudex-route` can also be installed on its own.
+Clone this repository and copy all skill directories together. Planning and review skills share references and the runtime inside `claudex-loop`; copy these together. The compatibility commands also require the shared skills. `claudex-route` can also be installed on its own.
 
 To install **only Claudex Route**, copy `skills/claudex-route/` into `~/.agents/skills/` for Codex or `~/.claude/skills/` for Claude Code. No other skill from this repository is required. The commands below install the complete collection into both hosts.
 
@@ -104,27 +117,33 @@ Copy-Item -Recurse -Force skills\* "$env:USERPROFILE\.agents\skills\"
 Copy-Item -Recurse -Force skills\* "$env:USERPROFILE\.claude\skills\"
 ```
 
-Open a new session to pick up the skills. In Codex, invoke `$claudex-route` for routing, or `$claudex-loop` for the full workflow. In Claude Code, invoke `/claudex-route` or `/claudex-loop` after manual installation. Updates are `git pull` and re-copy. A `.codex-plugin/plugin.json` is also supplied for Codex plugin packaging; manual skill installation does not require adding a marketplace.
+Open a new session to pick up the skills. In Codex, invoke `$claudex-plan` for plan authoring, `$claudex-review` for review, `$claudex-route` for routing, or `$claudex-loop` for the full workflow. In Claude Code, invoke `/claudex-plan`, `/claudex-review`, `/claudex-route` or `/claudex-loop` after manual installation. Updates are `git pull` and re-copy. A `.codex-plugin/plugin.json` is also supplied for Codex plugin packaging; manual skill installation does not require adding a marketplace.
 
 ### Examples
 
 ```text
+claudex-plan: plan this feature, plan=docs/feature.md
+claudex-review: plan=docs/feature.md, reviewer=claude, rounds=3
+claudex-review: kind=code, plan=docs/feature.md, builder=codex, inspector=claude, base=<commit>
 claudex this feature — plan and implement it
 claudex this plan, mode=review, plan=docs/migration.md, rounds=3
 claudex this feature, builder=codex, reviewer_model=gpt-6-astra
 claudex this feature, builder=claude, reviewer_model=claude-fable-5-1
+claudex this feature, reviewer=deepseek, builder=codex, inspector=claude
 ```
 
-The third example starts in Claude Code; the fourth starts in Codex. The host selects the opposite reviewer automatically. `codex-review` remains an explicit Codex review command; `codex-build` remains an explicit Codex builder command. For automatic host-based routing, use `claudex-loop`.
+Use your actual host. An explicit reviewer must differ from the host; an explicit inspector must differ from the builder. DeepSeek requires repository-specific opt-in. When omitted, reviewers follow the Claude/Codex defaults above. `claudex-plan` stops after writing; `claudex-review` starts from existing material. The same two skills serve every supported agent combination. `codex-review` remains an explicit Codex review command; `codex-build` remains an explicit Codex builder command. For a full composed workflow, use `claudex-loop`.
 
 ## Controls
 
 | Argument | Default | Purpose |
 |---|---|---|
-| `mode` | `full` | `review` starts from an existing plan |
+| `mode` | `full` | `plan` stops after authoring; `review` starts from an existing plan |
 | `plan` / `PLAN_FILE` | `docs/exec-plans/active/<date>-<slug>.md` | Plan path, carried through every phase; a generated default gets a suffix rather than overwriting, while a path you supply is used as given |
 | `log` / `LOG_FILE` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only decision log, kept beside its plan |
 | `builder` | current host | `claude` or `codex` |
+| `reviewer` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--reviewer` |
+| `inspector` | `default` | `claude`, `codex`, `deepseek`; map to `--inspector` |
 | `reviewer_model`, `builder_model`, `inspector_model` | each CLI's configuration | Explicit per-role model override |
 | `reviewer_effort`, `builder_effort`, `inspector_effort` | each CLI's configuration | Explicit supported reasoning effort |
 | `rounds` / `MAX_ROUNDS` | `20` | Completed plan-review round cap |
@@ -159,7 +178,7 @@ python scripts/validate.py
 python -m unittest discover -s tests -v
 ```
 
-CI runs on Windows, macOS and Linux. Tests cover host routing, both result formats, resumed-session identity, malformed/empty/failed responses, timeout handling, approval invalidation, complete change manifests, and build resumption. Tests use disposable Git repositories and fake CLI processes, without model quota. Live CLI smoke-test results are recorded in [VALIDATION.md](VALIDATION.md).
+CI runs on Windows, macOS and Linux. Tests cover independent reviewer/inspector selection, role conflicts, preserved fallback roles, host routing, both result formats, resumed-session identity, malformed/empty/failed responses, timeout handling, approval invalidation, complete change manifests, and build resumption. Tests use disposable Git repositories and fake CLI processes, without model quota. Live CLI smoke-test results are recorded in [VALIDATION.md](VALIDATION.md).
 
 ## History and credits
 

@@ -197,6 +197,29 @@ def resolve_roles(host: str, reviewer: str | None = None,
             "builder": builder, "inspector": inspector}
 
 
+def invocation_roles(args) -> dict:
+    """Separate preferred roles from --provider, the provider for this one turn.
+
+    Keep legacy --provider reviews/inspections working. A same-provider override
+    remains a fallback launch and must not replace the preferred role in evidence.
+    """
+    reviewer, inspector = args.reviewer, args.inspector
+    role = {"review": "reviewer", "inspect": "inspector", "roles": "reviewer"}.get(args.mode)
+    selected = reviewer if role == "reviewer" else inspector
+    author = (args.builder or args.host) if role == "inspector" else args.host
+    if role and args.provider and (args.mode == "roles" or args.provider != author):
+        if selected and selected != args.provider:
+            raise RunError(f"--provider conflicts with --{role}; omit --provider to use the selected role.")
+        if role == "reviewer":
+            reviewer = args.provider
+        else:
+            inspector = args.provider
+    roles = resolve_roles(args.host, reviewer, args.builder, inspector)
+    if args.mode == "build" and args.provider and args.provider != roles["builder"]:
+        raise RunError("--provider conflicts with --builder; select the builder with --builder.")
+    return roles
+
+
 def provider_failure_diagnostic(provider: str, run_dir: Path) -> tuple[str, bool]:
     """Return provider-owned error text and whether a structured status proves unavailability.
 
@@ -1924,7 +1947,8 @@ def wait_workers(pending: set, timeout: float):
 
 
 def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
-    provider = args.provider or roles["reviewer"]
+    # Research worker defaults are independent of the plan-review selection.
+    provider = args.provider or next(p for p in PROVIDERS if p != args.host)
     if provider == args.host:
         raise RunError("Panel workers must be the provider opposite the host.")
     if args.fallback_from or args.resume:
@@ -2109,13 +2133,16 @@ def run(args) -> int:
     repo = Path(args.repo).resolve(strict=True)
     plan = Path(args.plan)
     plan = (repo / plan).resolve(strict=True) if not plan.is_absolute() else plan.resolve(strict=True)
-    # Only an explicit DeepSeek inspector overrides the role; --provider BUILDER stays a fallback launch.
-    roles = resolve_roles(args.host,
-                          reviewer=args.provider if args.mode == "review" and args.provider != args.host else None,
-                          builder=args.builder,
-                          inspector="deepseek" if args.mode == "inspect" and args.provider == "deepseek" else None)
+    roles = invocation_roles(args)
     if args.mode == "panel":
         return run_panel(args, repo, plan, roles)
+    if args.mode == "check":
+        if not args.approval:
+            raise RunError("check requires --approval result.json.")
+        approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
+        check_approval(approval, plan, repo, args.host)
+        print(f"Approval matches the current plan; assurance={approval.get('assurance', 'legacy_unspecified')}.")
+        return 0
     provider = args.provider or (roles["builder"] if args.mode == "build" else
                                  roles["inspector"] if args.mode == "inspect" else roles["reviewer"])
     if provider == "agy" and args.mode != "review":
@@ -2148,13 +2175,6 @@ def run(args) -> int:
             raise RunError("Fallback resume source must be a result object.")
         if previous_fallback.get("fallback_from") != str(Path(args.fallback_from).resolve()):
             raise RunError("Fallback review resume must retain the original failed primary result.")
-    if args.mode == "check":
-        if not args.approval:
-            raise RunError("check requires --approval result.json.")
-        approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
-        check_approval(approval, plan, repo, args.host)
-        print(f"Approval matches the current plan; assurance={approval.get('assurance', 'legacy_unspecified')}.")
-        return 0
     if args.mode == "inspect" and (not args.base or args.resume):
         raise RunError("Inspection requires --base and a fresh session (no --resume).")
     requested_model = args.agy_model if provider == "agy" else args.model
@@ -2343,7 +2363,12 @@ def main(argv=None) -> int:
     parser.add_argument("--host", choices=HOSTS,
                         help="Actual host of the user conversation; do not infer from installed binaries.")
     parser.add_argument("--builder", choices=BUILDERS)
-    parser.add_argument("--provider", choices=REVIEWERS)
+    parser.add_argument("--reviewer", choices=REVIEWERS,
+                        help="Preferred plan reviewer, independent of the builder and inspector.")
+    parser.add_argument("--inspector", choices=INSPECTORS,
+                        help="Preferred final-code inspector, independent of the plan reviewer.")
+    parser.add_argument("--provider", choices=REVIEWERS,
+                        help="Provider for this turn; legacy role selector or recorded fallback override.")
     parser.add_argument("--fallback-from",
                         help="Failed other-provider result.json authorizing a degraded fresh same-provider review.")
     parser.add_argument("--repo", default=".")
@@ -2385,7 +2410,7 @@ def main(argv=None) -> int:
         if args.timeout < 1:
             raise RunError("Timeout must be positive.")
         if args.mode == "roles":
-            print(json.dumps(resolve_roles(args.host, args.provider, args.builder), indent=2))
+            print(json.dumps(invocation_roles(args), indent=2))
             return 0
         return run(args)
     except (RunError, OSError, ValueError, subprocess.SubprocessError) as exc:

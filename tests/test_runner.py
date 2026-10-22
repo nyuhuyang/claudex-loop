@@ -389,6 +389,18 @@ class RunnerTests(unittest.TestCase):
         with self.assertRaises(runner.RunError):
             runner.resolve_roles("codex", "codex")
 
+    def test_roles_command_reports_independent_selections_and_rejects_self_review(self):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            code = runner.main(["roles", "--host", "codex", "--reviewer", "deepseek",
+                                "--builder", "claude", "--inspector", "codex"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(output.getvalue()),
+                         {"host": "codex", "planner": "codex", "reviewer": "deepseek",
+                          "builder": "claude", "inspector": "codex"})
+        for flag in ("--reviewer", "--provider"):
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(runner.main(["roles", "--host", "codex", flag, "codex"]), 1)
+
     def test_both_review_adapters_complete_and_bind_custom_plan(self):
         for host in ("claude", "codex"):
             with self.subTest(host=host):
@@ -401,6 +413,56 @@ class RunnerTests(unittest.TestCase):
                 self.assertIn("`- [ ]` checkbox", (path.parent / "prompt.txt").read_text())
                 self.assertEqual(record["response"]["verdict"], "APPROVED")
                 self.assertEqual(record["assurance"], "cross_provider")
+
+    def test_independent_role_selectors_route_the_current_turn(self):
+        extra = ("--reviewer", "codex", "--builder", "codex", "--inspector", "deepseek")
+        code, review, approval, error = self.invoke(extra=extra)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(review["provider"], "codex")
+        self.assertEqual(review["roles"], {"host": "claude", "planner": "claude", "reviewer": "codex",
+                                         "builder": "codex", "inspector": "deepseek"})
+        code, build, _, error = self.invoke(mode="build", case="build",
+                                          extra=extra + ("--approval", str(approval), "--proof", "test"))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(build["provider"], "codex")
+        self.assertEqual(build["roles"], review["roles"])
+
+    def test_role_conflicts_and_self_review_are_rejected_before_launch(self):
+        cases = (("review", ("--reviewer", "deepseek", "--provider", "codex")),
+                 ("inspect", ("--inspector", "deepseek", "--provider", "codex", "--base", self.base)),
+                 ("build", ("--builder", "codex", "--provider", "claude")),
+                 ("review", ("--reviewer", "claude")),
+                 ("inspect", ("--inspector", "claude", "--base", self.base)))
+        for mode, extra in cases:
+            with self.subTest(mode=mode, extra=extra):
+                code, record, _, error = self.invoke(mode=mode, extra=extra)
+                self.assertEqual(code, 1)
+                self.assertIsNone(record)
+                self.assertTrue(error)
+
+    def test_selected_roles_survive_degraded_fallback_and_resume(self):
+        selection = ("--reviewer", "claude", "--inspector", "deepseek")
+        code, failed, primary, error = self.invoke("codex", case="quota", extra=selection)
+        self.assertEqual(code, 1, error)
+        fallback = selection + ("--provider", "codex", "--fallback-from", str(primary))
+        code, record, previous, error = self.invoke("codex", case="revise", extra=fallback)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(record["roles"], failed["roles"])
+        self.assertEqual(record["assurance"], "degraded_same_provider")
+        self.plan.write_text("Updated after review", encoding="utf-8")
+        code, record, _, error = self.invoke("codex", extra=fallback + ("--resume", str(previous)))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(record["fallback_session_state"], "resumed")
+
+    def test_selected_inspector_survives_degraded_fallback(self):
+        selection = ("--reviewer", "deepseek", "--inspector", "claude", "--base", self.base)
+        code, failed, primary, error = self.invoke("codex", mode="inspect", case="quota", extra=selection)
+        self.assertEqual(code, 1, error)
+        code, record, _, error = self.invoke(
+            "codex", mode="inspect", extra=selection + ("--provider", "codex", "--fallback-from", str(primary)))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(record["roles"], failed["roles"])
+        self.assertEqual(record["assurance"], "degraded_same_provider")
 
     def test_unpinned_and_explicit_model_selection(self):
         for provider in runner.PROVIDERS:
@@ -881,6 +943,13 @@ class PanelTests(unittest.TestCase):
             self.assertNotIn(str(self.repo), prompt)
         self.assertEqual(dry["repo_workers"][0]["id"], "w3")
         self.assertFalse(self.artifacts.exists())
+
+    def test_panel_default_workers_are_independent_of_reviewer_and_inspector(self):
+        code, record, _, error = self.launch(extra=("--reviewer", "deepseek", "--inspector", "deepseek"))
+        self.assertEqual(code, 0, error)
+        self.assertEqual(record["provider"], "claude")
+        self.assertEqual({w["provider"] for w in record["workers"]}, {"claude"})
+        self.assertEqual(record["roles"]["reviewer"], "deepseek")
 
     def test_launch_requires_matching_payload_digest(self):
         path = self.root / "panel.json"
@@ -1937,6 +2006,20 @@ class DeepSeekTests(unittest.TestCase):
         self.assertEqual(code, 0, error)
         self.assertEqual((record["roles"]["inspector"], record["provider"]), ("deepseek", "deepseek"))
         self.assertIsNotNone(record["snapshot"])
+
+    def test_explicit_roles_select_deepseek_without_execution_override(self):
+        selection = ("--reviewer", "deepseek", "--builder", "codex", "--inspector", "deepseek")
+        code, review, approval, error = self.call(provider=None, extra=selection)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(review["provider"], "deepseek")
+        code, _, _, error = self.call(mode="check", provider=None,
+                                     extra=selection + ("--approval", str(approval)))
+        self.assertEqual(code, 0, error)
+        code, inspection, _, error = self.call(mode="inspect", provider=None, extra=selection)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(inspection["provider"], "deepseek")
+        self.assertEqual(inspection["roles"], review["roles"])
+        self.assertIsNotNone(inspection["snapshot"])
 
     def assert_resume_refused(self, path, **kwargs):
         marker = self.fake / "invocations.txt"

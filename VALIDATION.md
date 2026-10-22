@@ -1,5 +1,13 @@
 # Validation — bidirectional loop
 
+## Composable planning and review (2026-10-22, AGE-133)
+
+On macOS with Python 3.11.10, `python3.11 scripts/validate.py` passed and `python3.11 -m unittest discover -s tests -v` completed 117 tests successfully (one Windows-only test skipped). Skill Creator's `quick_validate.py` passed for `claudex-plan`, `claudex-review` and the revised `claudex-loop`; `git diff --check` passed.
+
+New fake-CLI contracts cover independent reviewer/builder/inspector selections, matching role records across plan review and build, DeepSeek review/check/inspection without a `--provider` override, conflicting selections and self-review refusal, preferred roles retained during fallback/resume, and panel defaults independent of review choices. No live provider calls were made for this change.
+
+Python 3.14.7 exposed an existing failure in `DeepSeekTests.test_audit_crash_inputs_become_recorded_violations` for `symlink_loop`. Running that isolated test against the pre-change runner from Git reproduced the failure. This change leaves that compatibility issue unresolved; the passing full-suite result above uses Python 3.11.
+
 ## Antigravity provider status (2026-09-23)
 
 The runner has fake-`agy` contract coverage for isolated profile preflight, Gemini-only model policy, stdin stream-json transport, terminal failure signals, transcript tool audit, exact-URL citation binding, per-worker provider settings, panel transcript cleanup, plan-only review and resume identity, and the build approval gate. Tests use temporary `HOME` directories and make no live agy or network calls.

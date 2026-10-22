@@ -1,13 +1,15 @@
 ---
 name: codex-build
-description: "Have Codex implement a concrete work order and have Claude independently inspect the final changes. Preserves the explicit Codex builder choice; use claudex-loop for host-based planning and automatic reviewer selection."
+description: "Compatibility alias selecting builder=codex for a concrete work order. Use claudex-review with an independent inspector for final code review, or claudex-loop for the complete workflow."
 ---
 
 # Codex Build
 
-Compatibility entry point: the builder is explicitly Codex. The shared workflow and executable live in the sibling `claudex-loop` skill; install that skill alongside this one.
+Compatibility entry point: the builder is explicitly Codex. Review follows [claudex-review](../claudex-review/SKILL.md) with `kind=code`, `builder=codex` and an independent `inspector` (default Claude); preserve any explicit supported inspector choice. The shared workflow and executable live in the sibling `claudex-loop` skill; install that skill alongside this one.
 
 Load the shared [build reference](../claudex-loop/references/build.md) and [runtime reference](../claudex-loop/references/runtime.md). Preserve `SPEC_FILE` (mapped to the runner's `--plan`), `LOG_FILE`, `PROOF_CMD`, `MAX_FIX_ROUNDS`, and explicit model/effort arguments. The spec may have any filename; never substitute PLAN.md silently.
+
+The following are default Claude/Codex inspection examples; an explicit `inspector=deepseek` uses the shared role contract and its opt-in rules instead.
 
 - In Claude Code, Claude coordinates and delegates implementation to Codex through the runner's `build --host claude --builder codex` path. Claude then inspects all changes and independently runs proof checks. Log evidence and limitations. A fresh Claude CLI inspector is also available through the shared runner if useful.
 - In Codex, implement in the current host session with its normal tools, then use a fresh Claude inspector through `inspect --host codex --builder codex`. If Claude is unavailable and its failed result is marked fallback-eligible, automatically launch a fresh Codex inspector with `--provider codex --fallback-from FAILED_RESULT`. Record `degraded_same_provider`; do not describe it as cross-provider inspection.

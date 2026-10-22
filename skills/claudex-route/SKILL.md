@@ -22,6 +22,7 @@ Treat a request for advice as recommendation-only. A request to route and perfor
 | An implementation is ready | Ask another provider to inspect relevant changes against requirements, including test validity |
 | Repeated attempts have failed | Give another provider the reproduction, evidence, and failed approaches; ask for a testable alternative explanation |
 | A separable task has clear inputs and acceptance checks | Delegate that piece to a suitable smaller model and inspect its result |
+| The user wants only a plan, or review of existing material | Recommend the sibling `claudex-plan` or `claudex-review` when installed; load it only for the requested stage |
 | The user wants repeated planning, revision, building, and independent inspection | Recommend Claudex Loop; load that separate skill only if the user requests that workflow |
 
 The current agent keeps the user's requirements and coordinates the work. A different provider offers another perspective, not guaranteed correctness. A cheaper delegate does not need to be a peer reviewer of the entire architecture.

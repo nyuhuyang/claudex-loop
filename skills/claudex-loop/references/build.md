@@ -2,6 +2,8 @@
 
 Resolve the shared runner from the installed claudex-loop skill. Keep the spec and run artifacts available to both providers. Preserve user-selected toolchains and carry exact acceptance criteria and proof commands into the build.
 
+Read [the role contract](roles.md) for agent capabilities and provider-specific settings. `claudex-review kind=code` uses the verification/inspection section below without starting a build. Preserve independent `reviewer`, `builder` and `inspector` selections through handoffs; examples below show defaults. Settle [the launch budget](budget.md) before delegated builds or inspections.
+
 ## Preparation
 
 Capture the pre-build commit before changing code. For a new project, establish an initial Git baseline with the user's authorization; never claim a full Git diff without one. A host build may preserve and account for existing changes, but a delegated build requires an isolated clean checkout. Use a worktree for unrelated or live changes instead of stashing another session's work. Do not create commits merely to satisfy the gate without authorization.
@@ -28,7 +30,10 @@ Read all changes relative to the pre-build commit, including staged changes, del
 ```text
 python RUNNER inspect --host claude --builder codex --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 python RUNNER inspect --host codex --builder claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
+python RUNNER inspect --host codex --reviewer deepseek --builder codex --inspector claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 ```
+
+Use `--inspector` to select the code reviewer independently of the plan reviewer. Keep all explicit role flags on fallback launches; `--provider BUILDER` changes only the executing provider. DeepSeek inspection requires its repository opt-in and has no same-provider fallback; agy does not support inspection.
 
 If the selected other-provider inspector fails with `fallback_eligible=true`, immediately run a fresh same-provider inspection, unless `fallback=off` was selected:
 

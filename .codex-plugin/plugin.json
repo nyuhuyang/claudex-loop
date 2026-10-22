@@ -1,6 +1,6 @@
 {
   "name": "claudex-loop",
-  "description": "Standalone model routing and one-off handoffs with Claudex Route, plus the full Claudex Loop planning, build and review workflow.",
+  "description": "Composable plan authoring, configurable agent review, task routing, and the full Claudex Loop build workflow.",
   "author": {
     "name": "Chase AI",
     "url": "https://youtube.com/@chaseai"
@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Claudex Loop",
     "shortDescription": "Route tasks, plan, build and review across models",
-    "longDescription": "Use standalone Claudex Route to choose a model and make one scoped handoff, or Claudex Loop for the full planning, build and independent review workflow.",
+    "longDescription": "Use Claudex Plan to write a plan, Claudex Review to select a review agent, Claudex Route for a scoped handoff, or Claudex Loop to compose the full development workflow.",
     "developerName": "Chase AI",
     "category": "Productivity",
     "capabilities": [

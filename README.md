@@ -129,10 +129,11 @@ claudex this feature — plan and implement it
 claudex this plan, mode=review, plan=docs/migration.md, rounds=3
 claudex this feature, builder=codex, reviewer_model=gpt-6-astra
 claudex this feature, builder=claude, reviewer_model=claude-fable-5-1
-claudex this feature, reviewer=deepseek, builder=codex, inspector=claude
+claudex this feature, reviewer=deepseek, builder=codex, inspector=agy
+claudex-review: kind=code, plan=docs/feature.md, builder=claude, inspector=deepseek, base=<commit>
 ```
 
-Use your actual host. An explicit reviewer must differ from the host; an explicit inspector must differ from the builder. DeepSeek requires repository-specific opt-in. When omitted, reviewers follow the Claude/Codex defaults above. `claudex-plan` stops after writing; `claudex-review` starts from existing material. The same two skills serve every supported agent combination. `codex-review` remains an explicit Codex review command; `codex-build` remains an explicit Codex builder command. For a full composed workflow, use `claudex-loop`.
+Use your actual host. An explicit reviewer must differ from the host; an explicit inspector must differ from the builder. DeepSeek and Antigravity require repository-specific opt-in. When omitted, reviewers follow the Claude/Codex defaults above. `claudex-plan` stops after writing; `claudex-review` starts from existing material. The same two skills serve every supported agent combination. `codex-review` remains an explicit Codex review command; `codex-build` remains an explicit Codex builder command. For a full composed workflow, use `claudex-loop`.
 
 ## Controls
 
@@ -143,7 +144,7 @@ Use your actual host. An explicit reviewer must differ from the host; an explici
 | `log` / `LOG_FILE` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only decision log, kept beside its plan |
 | `builder` | current host | `claude` or `codex` |
 | `reviewer` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--reviewer` |
-| `inspector` | `default` | `claude`, `codex`, `deepseek`; map to `--inspector` |
+| `inspector` | `default` | `claude`, `codex`, `deepseek`, `agy`; map to `--inspector` |
 | `reviewer_model`, `builder_model`, `inspector_model` | each CLI's configuration | Explicit per-role model override |
 | `reviewer_effort`, `builder_effort`, `inspector_effort` | each CLI's configuration | Explicit supported reasoning effort |
 | `rounds` / `MAX_ROUNDS` | `20` | Completed plan-review round cap |
@@ -158,7 +159,7 @@ Use your actual host. An explicit reviewer must differ from the host; an explici
 
 `panel` mode fans research out to fresh, read-only workers from the other provider. From a Codex host: Claude web workers that never see the repository, and Claude repo workers confined to it by `--restricted`. From a Claude host: web-only Codex workers with shell, file-viewing and connector tools disabled. Citations are checked against each worker's own tool records, and the launch is bound to a dry run the user approved. Results are labelled `cross_provider_panel` and never approve a plan or a build. See the [runtime reference](skills/claudex-loop/references/runtime.md#research-panel).
 
-Each panel worker can also select a non-host `provider`, including Google's Antigravity CLI (`agy`) for `kind: web`. agy uses isolated, manually logged-in `HOME` profiles (one for web workers, an offline one for plan reviews), Gemini models only, and a full-transcript tool audit. Its citations require text returned by `read_url_content` for the exact URL. An explicit `review --provider agy` reviews only the supplied plan body, records `cross_provider_plan_only`, and cannot approve a build. Run `runner.py agy-profile` to create both profiles and see the manual login commands. The live permission canary passed; end-to-end live runs remain pending; see [validation](VALIDATION.md) before use.
+Each panel worker can also select a non-host `provider`, including Google's Antigravity CLI (`agy`) for `kind: web`. agy uses isolated, manually logged-in `HOME` profiles (one for web workers, an offline one for plan and code reviews), Gemini models only, and a full-transcript tool audit. Its citations require text returned by `read_url_content` for the exact URL. `review --reviewer agy` and `inspect --inspector agy --base COMMIT` work from either Claude Code or Codex. They send the plan and a repository text snapshot through stdin, plus the diff and change manifest for inspection, with no file or network tools. Results record `cross_provider` and snapshot limitations; plan approvals can gate builds. Legacy plan-body-only approvals remain ineligible. Requests above 1,000,000 UTF-8 bytes are refused without truncation; binary contents, symlink targets and ignored files require separate evidence. This sends all included repository text to the Gemini model, so select agy only with repository-specific opt-in. Run `runner.py agy-profile` to create both profiles and see the manual login commands. The live permission canary passed; the snapshot review path is covered by fake-CLI tests and awaits a live model check; see [validation](VALIDATION.md) before use.
 
 DeepSeek can be an opt-in plan reviewer or final inspector through the DeepSeek Harness CLI (`dsh`): `runner.py review --host claude --provider deepseek --repo . --plan PLAN` (or `inspect ... --provider deepseek --base COMMIT`). The plan and every file it reads go to the DeepSeek API, so use it only on repositories you may share. The runner removes dsh's shell, web and delegation tools, audits every tool call and the working tree after the run, and rejects any verdict from a run that stepped outside the repository. Windows is not supported yet.
 

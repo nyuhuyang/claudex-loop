@@ -1,5 +1,13 @@
 # Validation — bidirectional loop
 
+## DeepSeek and Antigravity review roles (2026-10-22, AGE-133 follow-up)
+
+On macOS with Python 3.11.10, `python3.11 -m unittest discover -s tests -v` completed 123 tests successfully (one Windows-only test skipped). `python3.11 scripts/validate.py`, the skill-creator metadata checks for the three changed skill entry points, and `git diff --check` passed.
+
+Fake-CLI contract tests cover both Claude and Codex hosts, both builders, and explicit DeepSeek or Antigravity selection for plan review and code inspection. Antigravity now receives repository text snapshots through the existing offline profile, with the tracked diff and change manifest for inspection. Tests check staged, deleted and untracked content, unchanged repository context, context hashes, binary/symlink omissions, ignored-file exclusion, request-size rejection before launch, repository mutation on success and timeout, exact-session plan resume, fresh inspection sessions, approval checks, and rejection of legacy plan-body-only approval. The isolated profile and transcript audit remain in effect; neither provider gains host or builder support.
+
+No live provider was launched for this follow-up. Antigravity's new snapshot review/inspection path is contract-tested, not yet live-model validated. Its earlier permission canary and DeepSeek's live review/inspection evidence below remain separate evidence. Antigravity requests are limited to 1,000,000 UTF-8 bytes with no truncation; ignored files, binary contents, symlink targets and runtime behavior require separate evidence. Submodules and special files are refused.
+
 ## Composable planning and review (2026-10-22, AGE-133)
 
 On macOS with Python 3.11.10, `python3.11 scripts/validate.py` passed and `python3.11 -m unittest discover -s tests -v` completed 117 tests successfully (one Windows-only test skipped). Skill Creator's `quick_validate.py` passed for `claudex-plan`, `claudex-review` and the revised `claudex-loop`; `git diff --check` passed.

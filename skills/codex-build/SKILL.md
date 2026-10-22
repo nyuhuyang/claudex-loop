@@ -9,7 +9,7 @@ Compatibility entry point: the builder is explicitly Codex. Review follows [clau
 
 Load the shared [build reference](../claudex-loop/references/build.md) and [runtime reference](../claudex-loop/references/runtime.md). Preserve `SPEC_FILE` (mapped to the runner's `--plan`), `LOG_FILE`, `PROOF_CMD`, `MAX_FIX_ROUNDS`, and explicit model/effort arguments. The spec may have any filename; never substitute PLAN.md silently.
 
-The following are default Claude/Codex inspection examples; an explicit `inspector=deepseek` uses the shared role contract and its opt-in rules instead.
+The following are default Claude/Codex inspection examples; an explicit `inspector=deepseek` or `inspector=agy` uses the shared role contract and its opt-in rules instead.
 
 - In Claude Code, Claude coordinates and delegates implementation to Codex through the runner's `build --host claude --builder codex` path. Claude then inspects all changes and independently runs proof checks. Log evidence and limitations. A fresh Claude CLI inspector is also available through the shared runner if useful.
 - In Codex, implement in the current host session with its normal tools, then use a fresh Claude inspector through `inspect --host codex --builder codex`. If Claude is unavailable and its failed result is marked fallback-eligible, automatically launch a fresh Codex inspector with `--provider codex --fallback-from FAILED_RESULT`. Record `degraded_same_provider`; do not describe it as cross-provider inspection.

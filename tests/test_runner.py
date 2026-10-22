@@ -1377,6 +1377,13 @@ class AgyTests(unittest.TestCase):
         self.review_profile = self.home / ".claudex-loop" / "agy-review"
         self.repo = self.root / "repo"
         self.repo.mkdir()
+        for args in (("init", "-q"), ("config", "user.email", "t@example.invalid"), ("config", "user.name", "T")):
+            runner.git(self.repo, *args)
+        (self.repo / "existing.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")
+        (self.repo / "deleted.py").write_text("# old implementation\n", encoding="utf-8")
+        runner.git(self.repo, "add", ".")
+        runner.git(self.repo, "commit", "-qm", "baseline")
+        self.base = runner.git(self.repo, "rev-parse", "HEAD").decode().strip()
         self.plan = self.root / "plan.md"
         self.plan.write_text("# Plan\nSecret plan detail.\n", encoding="utf-8")
         self.artifacts = self.root / "runs"
@@ -1399,16 +1406,18 @@ class AgyTests(unittest.TestCase):
              contextlib.redirect_stdout(io.StringIO()):
             runner.create_agy_profile()
 
-    def call(self, mode="panel", case="ok", extra=()):
+    def call(self, mode="panel", case="ok", extra=(), host="codex", provider="agy"):
         output, error = io.StringIO(), io.StringIO()
         def prefix(name, override=None):
             return [sys.executable, str(self.agy if name == "agy" else self.claude)]
-        args = [mode, "--host", "codex", "--repo", str(self.repo), "--plan", str(self.plan),
+        args = [mode, "--host", host, "--repo", str(self.repo), "--plan", str(self.plan),
                 "--artifacts", str(self.artifacts), *extra]
         if mode == "panel":
             args += ["--spec", str(self.spec_path)]
-        elif mode == "review":
-            args += ["--provider", "agy"]
+        elif mode in ("review", "inspect") and provider:
+            args += ["--provider", provider]
+        if mode == "inspect":
+            args += ["--base", self.base]
         old = set(self.artifacts.glob("*/result.json")) if self.artifacts.exists() else set()
         with patch.object(runner, "cli_prefix", side_effect=prefix), \
              patch.dict(os.environ, {"HOME": str(self.home), "FAKE_AGY_CASE": case,
@@ -1696,21 +1705,119 @@ class AgyTests(unittest.TestCase):
         self.assertNotIn("claude-test", argv)
         self.assertEqual(argv[argv.index("--effort") + 1], "low")
 
-    def test_plan_only_review_resume_and_build_gate(self):
+    def test_repository_review_resume_and_build_gate(self):
         code, record, _, error = self.call(mode="review")
         self.assertEqual(code, 0, (record, error))
-        self.assertEqual(record["assurance"], "cross_provider_plan_only")
-        self.assertIn("PLAN_BODY_ONLY", record["response"]["limitations"][-1])
+        self.assertEqual(record["assurance"], "cross_provider")
+        self.assertIn("REPOSITORY_SNAPSHOT", record["response"]["limitations"][-1])
         prompt = json.loads((self.fake / "review.stdin.json").read_text())["message"]["content"]
         self.assertIn("Secret plan detail", prompt)
-        self.assertIn("no tools or repository access", prompt)
+        self.assertIn("no tools or direct repository access", prompt)
+        self.assertIn("return a + b", prompt)
+        runner.check_approval(record, self.plan, self.repo, "codex")
+        legacy_record = dict(record, assurance="cross_provider_plan_only")
         with self.assertRaisesRegex(runner.RunError, "PLAN_BODY_ONLY"):
-            runner.check_approval(record, self.plan, self.repo)
+            runner.check_approval(legacy_record, self.plan, self.repo)
         result_path = Path(record["artifacts"]) / "result.json"
+        code, resumed, _, error = self.call(mode="review", extra=("--resume", str(result_path)))
+        self.assertEqual(code, 0, (resumed, error))
+        self.assertEqual(resumed["session_id"], record["session_id"])
         code, failed, _, _ = self.call(mode="review", case="wrong_id", extra=("--resume", str(result_path)))
         self.assertEqual(code, 1)
         self.assertFalse(failed["fallback_eligible"])
         self.assertIn("different conversation", failed["error"])
+
+    def test_both_hosts_can_select_agy_for_both_review_roles(self):
+        for host in runner.HOSTS:
+            for builder in runner.BUILDERS:
+                with self.subTest(host=host, builder=builder):
+                    selection = ("--reviewer", "agy", "--builder", builder, "--inspector", "agy")
+                    code, review, _, error = self.call("review", host=host, provider=None, extra=selection)
+                    self.assertEqual(code, 0, (review, error))
+                    approval = Path(review["artifacts"]) / "result.json"
+                    code, _, _, error = self.call("check", host=host, provider=None,
+                                                 extra=selection + ("--approval", str(approval)))
+                    self.assertEqual(code, 0, error)
+                    code, inspection, _, error = self.call("inspect", host=host, provider=None, extra=selection)
+                    self.assertEqual(code, 0, (inspection, error))
+                    self.assertEqual(inspection["roles"], review["roles"])
+                    self.assertEqual(inspection["provider"], "agy")
+                    self.assertEqual(inspection["assurance"], "cross_provider")
+                    self.assertEqual(inspection["snapshot"], runner.snapshot(self.repo, self.base))
+
+    def test_inspection_receives_complete_text_context_manifest_and_diff(self):
+        (self.repo / "existing.py").write_text("def add(a, b):\n    return a - b\n", encoding="utf-8")
+        runner.git(self.repo, "add", "existing.py")
+        (self.repo / "deleted.py").unlink()
+        (self.repo / "new file.py").write_text("# untracked implementation\n", encoding="utf-8")
+        (self.repo / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+        (self.repo / "ignored.txt").write_text("PRIVATE_IGNORED_CONTENT\n", encoding="utf-8")
+        code, record, _, error = self.call("inspect")
+        self.assertEqual(code, 0, (record, error))
+        context = json.loads((Path(record["artifacts"]) / "repository-context.json").read_text())
+        self.assertEqual(context["sha256"], record["repository_context_sha256"])
+        files = {f["path"]: f for f in context["files"]}
+        self.assertIn("return a - b", files["existing.py"]["content"])
+        self.assertEqual(files["deleted.py"]["kind"], "deleted")
+        self.assertEqual(files["new file.py"]["content"], "# untracked implementation\n")
+        prompt = json.loads((self.fake / "review.stdin.json").read_text())["message"]["content"]
+        self.assertIn("TRACKED DIFF:", prompt)
+        self.assertIn("-    return a + b", prompt)
+        self.assertIn("CHANGE MANIFEST", prompt)
+        self.assertNotIn("PRIVATE_IGNORED_CONTENT", prompt)
+        self.assertNotIn("--conversation", json.loads((self.fake / "review.argv.json").read_text()))
+        self.assertNotEqual(Path((self.fake / "review.cwd.txt").read_text()), self.repo)
+
+    def test_context_omissions_are_explicit_and_symlinks_are_not_followed(self):
+        outside = self.root / "outside.txt"
+        outside.write_text("PRIVATE_OUTSIDE_CONTENT", encoding="utf-8")
+        (self.repo / "link").symlink_to(outside)
+        (self.repo / "binary.dat").write_bytes(b"\x00binary")
+        code, record, _, error = self.call("review")
+        self.assertEqual(code, 0, (record, error))
+        prompt = (Path(record["artifacts"]) / "prompt.txt").read_text()
+        self.assertNotIn("PRIVATE_OUTSIDE_CONTENT", prompt)
+        self.assertIn("Binary/non-UTF-8 content omitted: binary.dat", record["response"]["limitations"])
+        self.assertIn("Symlink target not followed: link", record["response"]["limitations"])
+
+    def test_context_and_final_prompt_limits_fail_before_launch(self):
+        for target in (self.repo / "large.txt", self.root / "feedback.txt"):
+            with self.subTest(target=target):
+                target.write_text("x" * runner.AGY_MAX_PROMPT_BYTES, encoding="utf-8")
+                extra = ("--feedback", str(target)) if target.parent != self.repo else ()
+                with patch.object(runner, "execute") as execute:
+                    code, record, _, error = self.call("review", extra=extra)
+                self.assertEqual(code, 1, (record, error))
+                self.assertIn("limit", record["error"] if record else error)
+                execute.assert_not_called()
+                target.unlink()
+
+    def test_repository_changes_on_success_and_timeout_reject_verdict(self):
+        execute = runner.execute
+        for mode, timeout in (("review", False), ("inspect", False), ("inspect", True)):
+            with self.subTest(mode=mode, timeout=timeout):
+                def mutate(*args, **kwargs):
+                    result = execute(*args, **kwargs)
+                    (self.repo / "existing.py").write_text(str(time.time()), encoding="utf-8")
+                    if timeout:
+                        raise subprocess.TimeoutExpired(args[0], 1)
+                    return result
+                with patch.object(runner, "execute", side_effect=mutate):
+                    code, record, _, error = self.call(mode)
+                self.assertEqual(code, 1, (record, error))
+                self.assertEqual(record["failure_kind"], "confinement_violation")
+                self.assertFalse(record["fallback_eligible"])
+                self.assertNotIn("response", record)
+
+    def test_inspection_stays_fresh_and_has_no_same_provider_fallback(self):
+        code, record, _, error = self.call("inspect")
+        self.assertEqual(code, 0, (record, error))
+        path = Path(record["artifacts"]) / "result.json"
+        for extra in (("--resume", str(path)), ("--fallback-from", str(path))):
+            with self.subTest(extra=extra), patch.object(runner, "execute") as execute:
+                code, _, _, error = self.call("inspect", extra=extra)
+                self.assertEqual(code, 1)
+                execute.assert_not_called()
 
     def test_web_only_plan_edit_invalidates_digest(self):
         code, _, output, _ = self.call(extra=("--dry-run",))
@@ -1729,12 +1836,13 @@ class AgyTests(unittest.TestCase):
             self.assertEqual(runner.main(["agy-profile"]), 0)
         self.assertIn("One-time login:", output.getvalue())
         self.assertIn(str(self.profile), output.getvalue())
-        for args in (["build", "--provider", "agy"], ["inspect", "--provider", "agy"]):
+        for args in (["build", "--provider", "agy"],):
             with self.subTest(args=args):
                 code, _, _, error = self.call(mode=args[0], extra=args[1:])
                 self.assertEqual(code, 1)
                 self.assertIn("agy", error)
         self.assertEqual(runner.resolve_roles("codex", "agy")["reviewer"], "agy")
+        self.assertEqual(runner.resolve_roles("claude", inspector="agy")["inspector"], "agy")
         with self.assertRaises(runner.RunError):
             runner.resolve_roles("agy")
 
@@ -2008,18 +2116,21 @@ class DeepSeekTests(unittest.TestCase):
         self.assertIsNotNone(record["snapshot"])
 
     def test_explicit_roles_select_deepseek_without_execution_override(self):
-        selection = ("--reviewer", "deepseek", "--builder", "codex", "--inspector", "deepseek")
-        code, review, approval, error = self.call(provider=None, extra=selection)
-        self.assertEqual(code, 0, error)
-        self.assertEqual(review["provider"], "deepseek")
-        code, _, _, error = self.call(mode="check", provider=None,
-                                     extra=selection + ("--approval", str(approval)))
-        self.assertEqual(code, 0, error)
-        code, inspection, _, error = self.call(mode="inspect", provider=None, extra=selection)
-        self.assertEqual(code, 0, error)
-        self.assertEqual(inspection["provider"], "deepseek")
-        self.assertEqual(inspection["roles"], review["roles"])
-        self.assertIsNotNone(inspection["snapshot"])
+        for host in runner.HOSTS:
+            for builder in runner.BUILDERS:
+                with self.subTest(host=host, builder=builder):
+                    selection = ("--reviewer", "deepseek", "--builder", builder, "--inspector", "deepseek")
+                    code, review, approval, error = self.call(host=host, provider=None, extra=selection)
+                    self.assertEqual(code, 0, error)
+                    self.assertEqual(review["provider"], "deepseek")
+                    code, _, _, error = self.call(mode="check", host=host, provider=None,
+                                                 extra=selection + ("--approval", str(approval)))
+                    self.assertEqual(code, 0, error)
+                    code, inspection, _, error = self.call(mode="inspect", host=host, provider=None, extra=selection)
+                    self.assertEqual(code, 0, error)
+                    self.assertEqual(inspection["provider"], "deepseek")
+                    self.assertEqual(inspection["roles"], review["roles"])
+                    self.assertIsNotNone(inspection["snapshot"])
 
     def assert_resume_refused(self, path, **kwargs):
         marker = self.fake / "invocations.txt"

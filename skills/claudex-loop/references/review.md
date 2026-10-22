@@ -6,6 +6,8 @@ Used by `claudex-review` and the review phase of `claudex-loop`. Start from the 
 
 Resolve the reviewer using [the role contract](roles.md) and settle [the launch budget](budget.md). Use the shared runner in `review` mode with the actual `--host`, resolved `--plan`, selected `--reviewer` and optional model/effort. Preserve the resolved role selections on every round, resume, and fallback; `--provider` only overrides the current launch. First round creates a session. Further rounds use `--resume <previous-successful-result.json>` with the same provider/model/effort and a host-authored `--feedback` file containing dispositions; DeepSeek rounds never resume and start fresh with that `--feedback`. Never use a guessed session id, `--last`, or a build session as a reviewer.
 
+Antigravity receives a fresh repository text snapshot on every round and records its hash; its offline profile stays tool-free. Legacy plan-body-only approvals cannot gate builds. Respect the snapshot size and evidence limits in [runtime](runtime.md#antigravity-snapshot-review).
+
 Each successful response contains a verdict, evidence-backed findings, actual coverage and limitations. Preserve the entire response and runner result path in `LOG_FILE`.
 
 - **APPROVED:** no unresolved material defects. Approval is bound to the exact plan path and SHA256. Present remaining low-priority advice and limitations; zero findings is valid and is not proof of exhaustive correctness.

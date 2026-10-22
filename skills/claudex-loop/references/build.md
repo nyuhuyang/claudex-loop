@@ -33,7 +33,7 @@ python RUNNER inspect --host codex --builder claude --repo PROJECT --plan PLAN_P
 python RUNNER inspect --host codex --reviewer deepseek --builder codex --inspector claude --repo PROJECT --plan PLAN_PATH --base BASE_COMMIT
 ```
 
-Use `--inspector` to select the code reviewer independently of the plan reviewer. Keep all explicit role flags on fallback launches; `--provider BUILDER` changes only the executing provider. DeepSeek inspection requires its repository opt-in and has no same-provider fallback; agy does not support inspection.
+Use `--inspector` to select the code reviewer independently of the plan reviewer. Keep all explicit role flags on fallback launches; `--provider BUILDER` changes only the executing provider. DeepSeek and Antigravity inspection require repository-specific opt-in and have no same-provider fallback. Antigravity receives the repository text snapshot, manifest and diff through stdin using its offline review profile; it does not open files or execute proofs.
 
 If the selected other-provider inspector fails with `fallback_eligible=true`, immediately run a fresh same-provider inspection, unless `fallback=off` was selected:
 
@@ -44,7 +44,7 @@ python RUNNER inspect --host claude --builder claude --provider claude --repo PR
 
 The fallback result is `degraded_same_provider`. It is useful adversarial review from a clean context, but it is not cross-provider validation. The failed primary result must describe the same base commit and code snapshot; after any code change, try the primary inspector again before falling back. Preserve both attempt records and surface the primary failure and reduced assurance in the final report.
 
-The runner supplies the tracked diff plus a manifest of all changed and untracked files. The reviewer must open added files. It fingerprints the inspected state and refuses approval if code changes during inspection. Ignored files are not enumerated by Git: inspect any ignored build deliverables separately. Changed submodules require an explicit inspection path rather than a silently incomplete diff.
+The runner supplies the tracked diff plus a manifest of all changed and untracked files. The reviewer must read added files, either through file tools or the supplied Antigravity repository snapshot. It fingerprints the inspected state and refuses approval if code changes during inspection. Ignored files are not enumerated by Git: inspect any ignored build deliverables separately. Changed submodules require an explicit inspection path rather than a silently incomplete diff.
 
 Log findings, coverage, limitations, assurance and host dispositions. Fix accepted findings, rerun affected proof checks, then inspect again with a fresh session; prefer the other provider and repeat the validated fallback only if it remains unavailable. An inspection applies to the recorded snapshot only. Later edits invalidate it. If the host takes over, choose the inspector opposite the new builder. For mixed authorship, log the split and have each provider review the other's changes; disclose remaining gaps if the round budget is exhausted.
 

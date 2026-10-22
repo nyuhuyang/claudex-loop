@@ -21,8 +21,8 @@ Read [the runtime reference](references/runtime.md) before launching a CLI. Reso
 | `LOG_FILE` / `log` | `docs/exec-plans/active/<date>-<slug>.review-log.md` | Append-only transcript, kept beside its plan. Archive both to `docs/exec-plans/completed/` under the completion rule below |
 | `rounds` / `MAX_ROUNDS` | `20` | Maximum completed plan-review rounds |
 | `builder` | host | Provider implementing the plan |
-| `reviewer` | `default` | `claude`, `codex`, `deepseek`, or `agy`; map to `--reviewer`. Must differ from the planner; agy approval is plan-body-only |
-| `inspector` | `default` | `claude`, `codex`, or `deepseek`; map to `--inspector`. Must differ from the builder |
+| `reviewer` | `default` | `claude`, `codex`, `deepseek`, or `agy`; map to `--reviewer`. Must differ from the planner; agy uses repository snapshots |
+| `inspector` | `default` | `claude`, `codex`, `deepseek`, or `agy`; map to `--inspector`. Must differ from the builder |
 | `deepseek_model` / `dsh_cli` | dsh default | Model id and absolute `dsh` path, used only for DeepSeek runs |
 | `research` | proportionate to task | `none`, `web`, or explicit opt-in `deep` |
 | `mode` | `full` | `full` composes planning and review; `plan` stops after authoring; `review` starts from an existing plan |

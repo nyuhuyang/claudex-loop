@@ -14,7 +14,7 @@
     "adversarial-review",
     "skills"
   ],
-  "version": "2.3.1",
+  "version": "2.4.0",
   "skills": "./skills/",
   "repository": "https://github.com/chaseai-yt/claudex-loop",
   "interface": {

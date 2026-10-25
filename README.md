@@ -53,7 +53,7 @@ claudex-route: Recommend a second opinion on this plan before we build.
 claudex-route: Pick a suitable model and have it diagnose this failing test read-only.
 ```
 
-For example, Luna may suit a focused fixture-generation task, Terra a bounded implementation, and Astra or Fable a difficult review. These are task-fit recommendations, not a fixed ranking; available models, context, verification, and current pricing matter. Staying with your current model is a valid result. Route is a self-contained instruction skill with no Python dependency; a delegated run requires the selected CLI and account access. It does not use the full loop's approval-binding runner.
+For example, Luna may suit a focused fixture-generation task, Sol a bounded implementation, and Astra or Fable a difficult review. These are task-fit recommendations, not a fixed ranking; available models, context, verification, and current pricing matter. Staying with your current model is a valid result. Route is a self-contained instruction skill with no Python dependency; a delegated run requires the selected CLI and account access. It does not use the full loop's approval-binding runner.
 
 Claudex Route runs independently. Use **Claudex Loop** when you want repeated plan review, implementation, and independent inspection.
 
@@ -170,7 +170,7 @@ The runner validates a successful CLI turn and a structured review; an empty out
 
 A clean structured result does not prove the model is right. The log preserves coverage, limitations and concrete evidence. Zero findings is valid; a large number of findings is not a quality score. `BLOCKED`, ordinary execution failures and exhausted round budgets are surfaced rather than converted to approval. A quota/authentication/CLI/service/timeout failure may authorize a fresh same-provider fallback, but its approval remains visibly weaker than cross-provider approval.
 
-Codex reviews use the read-only shell sandbox. Claude reviews expose only file reading/search, with customizations disabled and no MCP tools. These boundaries differ: see [runtime details](skills/claudex-loop/references/runtime.md), especially existing Codex MCP configuration. Builders use bounded permissions, and delegated builds require a clean checkout. A worktree preserves unrelated work; it is not itself a security sandbox.
+Codex reviews use the read-only shell sandbox. Claude reviews expose only file reading/search, with customizations disabled and no MCP tools. Codex runs also switch off user plugins, apps and MCP servers, since those act outside the shell sandbox. These boundaries differ: see [runtime details](skills/claudex-loop/references/runtime.md). Builders use bounded permissions, and delegated builds require a clean checkout. A worktree preserves unrelated work; it is not itself a security sandbox.
 
 ## Development and verification
 

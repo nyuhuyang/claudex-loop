@@ -111,6 +111,8 @@ if case == 'blocked':
     review.update(verdict='BLOCKED', coverage=[], limitations=['Required schema unavailable.'])
 if case == 'malformed':
     review = {'verdict':'APPROVED'}
+if case == 'arrow':
+    review['summary'] = 'Sound ' + chr(0x2192) + ' ok'
 if 'exec' in sys.argv:
     output = pathlib.Path(sys.argv[sys.argv.index('-o')+1])
     output.write_text('Built; proof passed.' if case == 'build' else json.dumps(review))
@@ -571,7 +573,10 @@ class RunnerTests(unittest.TestCase):
         self.assertIn("apps", record["error"])
         code, record, path, _ = self.invoke("claude", mode="build", case="build",
                                             extra=("--builder", "codex", "--unreviewed-spec", "--proof", "true"))
-        self.assertNotIn("--disable", json.loads((path.parent / "command.json").read_text()))
+        argv = json.loads((path.parent / "command.json").read_text())
+        self.assertEqual([argv[i + 1] for i, arg in enumerate(argv) if arg == "--disable"],
+                         ["apps", "plugins"])
+        self.assertIn("notify=[]", argv)
         with patch.dict(os.environ, {"FAKE_FEATURES_FAIL": "1"}):
             code, record, _, _ = self.invoke("claude")
         self.assertEqual(code, 1)
@@ -596,6 +601,37 @@ class RunnerTests(unittest.TestCase):
         self.assertIn('sandbox_mode="read-only"', args)
         self.assertNotIn("-s", args)
         self.assertNotIn("--last", args)
+
+    def test_builders_load_no_user_hooks_or_mcp_tools(self):
+        claude = runner.command("claude", "build", self.root)
+        self.assertEqual(json.loads(claude[claude.index("--settings") + 1]), {"disableAllHooks": True})
+        self.assertEqual(claude[claude.index("--mcp-config") + 1], '{"mcpServers":{}}')
+        self.assertIn("--strict-mcp-config", claude)
+        codex = runner.command("codex", "build", self.root)
+        self.assertEqual(codex.count("--disable"), 2)
+        self.assertIn("notify=[]", codex)
+
+    def test_codex_records_effective_settings_from_its_rollout(self):
+        # Issue #38: the effective model/effort/sandbox live in Codex's session rollout.
+        home = self.root / "codex-home"
+        day = home / "sessions" / "2026" / "10" / "14"
+        day.mkdir(parents=True)
+        context = {"type": "turn_context", "payload": {"model": "gpt-test", "effort": "low",
+                                                       "sandbox_policy": {"type": "read-only"}}}
+        (day / f"rollout-2026-10-14T00-00-00-{SESSION}.jsonl").write_text(
+            "\n".join([json.dumps({"type": "session_meta"}), json.dumps(context), ""]), encoding="utf-8")
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            code, record, _, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertEqual((record["effective_model"], record["effective_effort"], record["effective_sandbox"]),
+                         ("gpt-test", "low", "read-only"))
+        self.assertEqual(record["observed_models"], [])
+
+    def test_codex_run_without_rollout_still_completes(self):
+        with patch.dict(os.environ, {"CODEX_HOME": str(self.root / "missing")}):
+            code, record, _, _ = self.invoke()
+        self.assertEqual(code, 0)
+        self.assertNotIn("effective_model", record)
 
     def test_failures_never_approve_and_keep_diagnostics(self):
         for host in ("claude", "codex"):
@@ -836,6 +872,11 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(next(f for f in snap["files"] if f["path"] == "existing.py")["sha256"],
                          runner.digest((self.repo / "existing.py").read_bytes()))
 
+    def test_staged_rename_lists_old_path_as_deleted(self):
+        self.git("mv", "delete.py", "moved.py")
+        files = {f["path"]: f["kind"] for f in runner.snapshot(self.repo, self.base)["files"]}
+        self.assertEqual((files.get("delete.py"), files.get("moved.py")), ("deleted", "file"))
+
     def test_inspection_requires_other_provider_and_fresh_session(self):
         code, _, _, error = self.invoke(mode="inspect", extra=("--base", self.base, "--provider", "claude"))
         self.assertEqual(code, 1)
@@ -844,6 +885,15 @@ class RunnerTests(unittest.TestCase):
         code, _, _, error = self.invoke(mode="inspect", extra=("--base", self.base, "--resume", str(previous)))
         self.assertEqual(code, 1)
         self.assertIn("fresh session", error)
+
+    def test_git_subdirectory_is_refused_as_repo(self):
+        # Manifest paths are repository-root relative; a subfolder would misread them.
+        sub = self.repo / "sub"
+        sub.mkdir()
+        code, _, _, error = self.invoke(mode="inspect",
+                                        extra=("--base", self.base, "--repo", str(sub)))
+        self.assertEqual(code, 1)
+        self.assertIn("repository root", error)
 
     def test_changed_code_during_inspection_fails(self):
         (self.repo / "new.py").write_text("original new file")
@@ -860,6 +910,100 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("clean checkout", error)
         self.assertEqual((self.repo / "user_work.py").read_text(), "preserve me")
+
+    def test_build_rejects_provider_that_contradicts_builder_before_launch(self):
+        with patch.object(runner, "execute", wraps=runner.execute) as launch:
+            code, record, _, error = self.invoke(
+                host="codex", mode="build", case="build",
+                extra=("--builder", "codex", "--provider", "claude",
+                       "--unreviewed-spec", "--proof", "python -m unittest"))
+        self.assertEqual(code, 1, record)
+        launch.assert_not_called()
+        self.assertIsNone(record)
+        self.assertIn("builder", error.lower())
+        self.assertFalse((self.repo / "built.py").exists())
+
+    def test_build_accepts_explicit_provider_matching_builder(self):
+        code, record, _, _ = self.invoke(
+            host="codex", mode="build", case="build",
+            extra=("--builder", "codex", "--provider", "codex",
+                   "--unreviewed-spec", "--proof", "python -m unittest"))
+        self.assertEqual(code, 0, record)
+        self.assertEqual(record["provider"], record["roles"]["builder"])
+        self.assertTrue((self.repo / "built.py").exists())
+
+    def test_build_dispatches_approved_snapshot_and_rejects_changed_live_plan(self):
+        self.plan.write_bytes(b"# Work order\r\nKeep the original until the copy is verified.\r\n")
+        approved_bytes = self.plan.read_bytes()
+        approved_body = self.plan.read_text(encoding="utf-8")
+        _, _, approval, _ = self.invoke(host="codex")
+        real_check = runner.check_approval
+        unapproved_body = "UNAPPROVED REPLACEMENT: delete the original before verification."
+
+        def change_after_check(*args, **kwargs):
+            result = real_check(*args, **kwargs)
+            self.plan.write_text(unapproved_body, encoding="utf-8")
+            return result
+
+        with patch.object(runner, "check_approval", side_effect=change_after_check):
+            code, record, path, _ = self.invoke(
+                host="codex", mode="build", case="build",
+                extra=("--approval", str(approval), "--proof", "python -m unittest"))
+        self.assertIsNotNone(path, record)
+        prompt = (path.parent / "prompt.txt").read_text(encoding="utf-8")
+        prompt_bytes = (path.parent / "prompt.txt").read_bytes()
+        self.assertIn(approved_bytes, prompt_bytes)
+        self.assertNotIn(b"\r\r\n", prompt_bytes)
+        self.assertNotIn(unapproved_body, prompt)
+        self.assertIn(approved_body, prompt)
+        self.assertEqual(record["plan_sha256"], runner.digest(approved_bytes))
+        self.assertEqual(code, 1, record)
+        self.assertEqual(record["status"], "failed")
+        self.assertIn("Plan changed during the run", record["error"])
+        self.assertTrue((self.repo / "built.py").exists())
+
+    def test_missing_feedback_finalizes_created_run_as_failed(self):
+        with patch.object(runner, "execute", wraps=runner.execute) as launch:
+            code, record, _, _ = self.invoke(extra=("--feedback", str(self.root / "missing.txt")))
+        self.assertEqual(code, 1)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["error"])
+        self.assertGreaterEqual(record["elapsed_seconds"], 0)
+        launch.assert_not_called()
+
+    def test_invalid_utf8_feedback_finalizes_created_run_as_failed(self):
+        feedback = self.root / "feedback.txt"
+        feedback.write_bytes(b"Invalid UTF-8: \xff")
+        with patch.object(runner, "execute", wraps=runner.execute) as launch:
+            code, record, _, _ = self.invoke(extra=("--feedback", str(feedback)))
+        self.assertEqual(code, 1)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["error"])
+        launch.assert_not_called()
+
+    def test_invalid_utf8_plan_finalizes_created_run_as_failed(self):
+        self.plan.write_bytes(b"Invalid UTF-8: \xff")
+        with patch.object(runner, "execute", wraps=runner.execute) as launch:
+            code, record, _, _ = self.invoke()
+        self.assertEqual(code, 1)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["status"], "failed")
+        self.assertTrue(record["error"])
+        launch.assert_not_called()
+
+    def test_completed_round_exits_0_when_stdout_cannot_encode_the_record(self):
+        # Issue #31: a reply character outside the console code page turned a saved,
+        # completed round into exit 1. U+2192 is outside cp1252 (an em dash is not).
+        out = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with patch.object(runner, "cli_prefix", return_value=[sys.executable, str(self.cli)]), \
+             patch.dict(os.environ, {"FAKE_CASE": "arrow", "FAKE_PLAN": str(self.plan)}), \
+             contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            code = runner.main(["review", "--host", "codex", "--repo", str(self.repo), "--plan",
+                                str(self.plan), "--artifacts", str(self.artifacts)])
+        record = json.loads(next(self.artifacts.glob("*/result.json")).read_text(encoding="utf-8"))
+        self.assertEqual((code, record["status"]), (0, "completed"))
 
     def test_build_resume_keeps_initial_baseline_and_existing_build_changes(self):
         extra = ("--builder", "codex", "--unreviewed-spec", "--proof", "python -m unittest")

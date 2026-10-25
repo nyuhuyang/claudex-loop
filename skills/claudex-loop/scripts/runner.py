@@ -355,9 +355,13 @@ def cli_prefix(provider: str, override: str | None = None) -> list[str]:
         raise RunError(f"{name} is not on PATH. Install and authenticate its CLI first.")
     path = Path(executable)
     if os.name == "nt" and path.suffix.lower() in (".cmd", ".bat", ".ps1"):
-        entry = path.parent / "node_modules" / (
-            "@openai/codex/bin/codex.js" if provider == "codex"
-            else "@anthropic-ai/claude-code/cli.js")
+        package = path.parent / "node_modules" / (
+            "@openai/codex" if provider == "codex" else "@anthropic-ai/claude-code")
+        # Prefer the native executable: it avoids Node's argv handling and batch quoting entirely.
+        native = package / "bin" / f"{provider}.exe"
+        if native.is_file():
+            return [str(native)]
+        entry = package / ("bin/codex.js" if provider == "codex" else "cli.js")
         node = shutil.which("node")
         if node and entry.is_file():
             return [node, str(entry)]
@@ -375,7 +379,8 @@ def git(repo: Path, *args: str) -> bytes:
 def snapshot(repo: Path, base: str) -> dict:
     """Read tracked, staged, deleted and untracked changes without staging anything."""
     base_id = git(repo, "rev-parse", "--verify", base + "^{commit}").decode().strip()
-    tracked = git(repo, "diff", "--no-ext-diff", "--name-only", "-z", base_id, "--")
+    # --no-renames: a staged rename must list its old path as deleted, not drop it.
+    tracked = git(repo, "diff", "--no-ext-diff", "--no-renames", "--name-only", "-z", base_id, "--")
     untracked = git(repo, "ls-files", "--others", "--exclude-standard", "-z")
     names = sorted(set(os.fsdecode(n) for n in (tracked + untracked).split(b"\0") if n))
     files = []
@@ -771,6 +776,11 @@ def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
                  ["-c", 'sandbox_mode="workspace-write"'] if session else
                  ["-s", "read-only" if review else "workspace-write"])
         args += ["-c", 'approval_policy="never"', "--json", "-o", str(run_dir / "reply.txt")]
+        # Apps, plugins and the notify hook act outside the sandbox in every mode. Reviews may
+        # have disabled them already through the feature probe; avoid a duplicate flag.
+        for feature in (f for f in ("apps", "plugins") if f not in disable):
+            args += ["--disable", feature]
+        args += ["-c", "notify=[]"]
         if review:
             args += ["--skip-git-repo-check", "--output-schema", str(run_dir / "schema.json")]
             for feature in disable:
@@ -790,7 +800,10 @@ def command(provider: str, mode: str, run_dir: Path, model=None, effort=None,
     else:
         # Keep normal user permissions for commands. A denied proof command is a
         # reported failure; it is never grounds to silently bypass permissions.
-        args += ["--permission-mode", "acceptEdits"]
+        # User hooks fire in the child too (a session logger wrote into the checkout under
+        # build; a TTS hook spoke the builder's reply), and MCP tools act outside the checkout.
+        args += ["--permission-mode", "acceptEdits", "--settings", '{"disableAllHooks":true}',
+                 "--strict-mcp-config", "--mcp-config", '{"mcpServers":{}}']
     if session:
         args += ["--resume", session]
     if model:
@@ -845,6 +858,32 @@ def execute(argv: list[str], prompt: str, repo: Path, run_dir: Path, timeout: in
             return proc.returncode
 
 
+def codex_effective_settings(session: str) -> dict:
+    """Best effort: the model, effort and sandbox the Codex client applied (#38).
+
+    Read from the last turn_context in Codex's session rollout, an undocumented
+    internal file. These are client-side settings, not a server confirmation.
+    Any missing file or changed format leaves the record unchanged.
+    """
+    try:
+        home = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex")
+        rollout = max((home / "sessions").glob(f"*/*/*/rollout-*-{session}.jsonl"),
+                      key=lambda f: f.stat().st_mtime, default=None)
+        context = None
+        for line in (rollout.read_text(encoding="utf-8").splitlines() if rollout else []):
+            event = json.loads(line) if line.strip() else {}
+            if isinstance(event, dict) and event.get("type") == "turn_context":
+                context = event.get("payload")
+        if not isinstance(context, dict):
+            return {}
+        sandbox = context.get("sandbox_policy")
+        settings = {"effective_model": context.get("model"), "effective_effort": context.get("effort"),
+                    "effective_sandbox": sandbox.get("type") if isinstance(sandbox, dict) else None}
+        return {k: v for k, v in settings.items() if isinstance(v, str)}
+    except (OSError, ValueError):
+        return {}
+
+
 def parse_result(provider: str, mode: str, run_dir: Path, expected_session=None) -> dict:
     stdout = (run_dir / "stdout.txt").read_text(encoding="utf-8", errors="replace")
     if provider == "agy":
@@ -863,7 +902,8 @@ def parse_result(provider: str, mode: str, run_dir: Path, expected_session=None)
         session = started[0]
         text = (run_dir / "reply.txt").read_text(encoding="utf-8")
         value = json.loads(text) if mode != "build" else text
-        metadata = {"usage": completed[0].get("usage"), "observed_models": []}
+        metadata = {"usage": completed[0].get("usage"), "observed_models": [],
+                    **codex_effective_settings(session)}
     else:
         envelope = json.loads(stdout)
         # Some CLI versions emit an array of init/assistant/result events for JSON.
@@ -906,13 +946,14 @@ def valid_session(provider: str, value) -> bool:
     return True
 
 
-def check_approval(record: dict, plan: Path, repo: Path, host: str | None = None) -> None:
+def check_approval(record: dict, plan: Path, repo: Path, host: str | None = None,
+                   plan_body: bytes | None = None) -> None:
     if (record.get("status") != "completed" or record.get("mode") != "review"
             or record.get("response", {}).get("verdict") != "APPROVED"):
         raise RunError("A completed APPROVED plan review is required.")
     if record.get("repo") != str(repo) or record.get("plan") != str(plan):
         raise RunError("Approval belongs to a different repository or plan path.")
-    if record.get("plan_sha256") != digest(plan.read_bytes()):
+    if record.get("plan_sha256") != digest(plan.read_bytes() if plan_body is None else plan_body):
         raise RunError("Plan changed after approval. Review the current plan again.")
     if record.get("assurance") == "cross_provider_plan_only":
         raise RunError("PLAN_BODY_ONLY review cannot approve a build; obtain a repository-aware review.")
@@ -2198,26 +2239,35 @@ def run_panel(args, repo: Path, plan: Path, roles: dict) -> int:
         })
     record["elapsed_seconds"] = round(time.time() - record["started_at"], 2)
     save(run_dir / "result.json", record)
-    print(json.dumps(record, ensure_ascii=False, indent=2))
+    print(json.dumps(record, indent=2))
     return 0 if record["status"] == "completed" else 1
 
 
 def run(args) -> int:
     repo = Path(args.repo).resolve(strict=True)
+    top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=repo,
+                         capture_output=True, timeout=30)
+    if top.returncode == 0 and Path(top.stdout.decode().strip()).resolve() != repo:
+        # Snapshot paths are repository-root relative, so a subfolder would be misread.
+        raise RunError("--repo is inside a git repository; pass the repository root instead.")
     plan = Path(args.plan)
     plan = (repo / plan).resolve(strict=True) if not plan.is_absolute() else plan.resolve(strict=True)
     roles = invocation_roles(args)
     if args.mode == "panel":
         return run_panel(args, repo, plan, roles)
+    # Bind approval and the dispatched work order to the same captured bytes.
+    plan_body = plan.read_bytes()
     if args.mode == "check":
         if not args.approval:
             raise RunError("check requires --approval result.json.")
         approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
-        check_approval(approval, plan, repo, args.host)
+        check_approval(approval, plan, repo, args.host, plan_body)
         print(f"Approval matches the current plan; assurance={approval.get('assurance', 'legacy_unspecified')}.")
         return 0
     provider = args.provider or (roles["builder"] if args.mode == "build" else
                                  roles["inspector"] if args.mode == "inspect" else roles["reviewer"])
+    if args.mode == "build" and provider != roles["builder"]:
+        raise RunError("Build provider must match the builder. Use --builder to change both roles.")
     if provider == "deepseek" and args.mode == "build":
         raise RunError("DeepSeek is not a runner build target; implement in the DeepSeek host session "
                        "or select --builder claude|codex for a delegated build.")
@@ -2277,14 +2327,13 @@ def run(args) -> int:
             raise RunError("Checkout changed since the previous build. Inspect intervening work before continuing.")
         if args.approval:
             approval = json.loads(Path(args.approval).read_text(encoding="utf-8"))
-            check_approval(approval, plan, repo, args.host)
+            check_approval(approval, plan, repo, args.host, plan_body)
             approval_assurance = approval.get("assurance", "legacy_unspecified")
         elif not args.unreviewed_spec:
             raise RunError("Supply --approval, or explicitly --unreviewed-spec for a standalone work order.")
         if not args.proof:
             raise RunError("Build requires --proof with the agreed verification command.")
     run_dir = make_run_dir(args, repo)
-    plan_body = plan.read_bytes()
     assurance = ("degraded_same_provider" if fallback else
                  "cross_provider" if args.mode in ("review", "inspect") else None)
     record = {"status": "running", "mode": args.mode, "provider": provider, "roles": roles,
@@ -2305,48 +2354,57 @@ def run(args) -> int:
             fallback_session_state="resumed" if previous else "fresh",
         )
     save(run_dir / "result.json", record)
-    save(run_dir / "schema.json", REVIEW_SCHEMA)
-    instructions = PROVIDER_ADAPTERS[provider]["review_prompt"](repo) if args.mode != "build" else (
-        "Implement the attached frozen work order within this checkout. Do not commit, push or publish. "
-        "Resolve source paths relative to this checkout; never edit an original checkout named in the plan. "
-        "Do not silently redesign an impossible requirement: report it and the proposed deviation. "
-        f"Run the agreed proof command: {args.proof}\n"
-        "Report files changed, proof output, denied/blocked actions, and deviations. "
-        "Your report is advisory; another provider will independently review the final changes.\n"
-    )
-    if args.mode == "review":
-        instructions += (
-            "Also report, as a low finding, any actionable plan item (progress step, acceptance "
-            "criterion, verification check, sub-step) that is not its own `- [ ]` checkbox.\n"
+    try:
+        save(run_dir / "schema.json", REVIEW_SCHEMA)
+        instructions = PROVIDER_ADAPTERS[provider]["review_prompt"](repo) if args.mode != "build" else (
+            "Implement the attached frozen work order within this checkout. Do not commit, push or publish. "
+            "Resolve source paths relative to this checkout; never edit an original checkout named in the plan. "
+            "Do not silently redesign an impossible requirement: report it and the proposed deviation. "
+            f"Run the agreed proof command: {args.proof}\n"
+            "Report files changed, proof output, denied/blocked actions, and deviations. "
+            "Your report is advisory; another provider will independently review the final changes.\n"
         )
-    if fallback:
-        session_instruction = (
-            "You are resuming the same fallback reviewer session. " if previous else
-            "You are in a fresh fallback reviewer session. "
-        )
-        instructions = (
-            "DEGRADED SAME-PROVIDER FALLBACK: the preferred other-provider reviewer was "
-            "unavailable. " + session_instruction +
-            "You share the builder/planner provider. "
-            "Review adversarially and do not claim cross-provider independence. "
-            "The runner will preserve this limitation in the result.\n" + instructions
-        )
-    prompt = (instructions + f"\nPLAN SHA256: {record['plan_sha256']}\n" if provider == "agy" else
-              instructions + f"\nPLAN PATH: {plan}\nPLAN SHA256: {record['plan_sha256']}\n")
-    prompt += "<plan>\n" + plan_body.decode("utf-8-sig") + "\n</plan>\n"
-    if repository_context is not None:
-        prompt += "\nREPOSITORY CONTEXT (JSON, paths relative to repository root):\n"
-        prompt += json.dumps(repository_context, ensure_ascii=True) + "\n"
-    if previous:
-        prompt += "Check prior findings against this revision; do not relitigate resolved items without new evidence.\n"
-    if before:
-        save(run_dir / "snapshot.json", before)
-        diff = git(repo, "diff", "--no-ext-diff", "--no-textconv", before["base"], "--").decode("utf-8", errors="replace")
-        prompt += "\nCHANGE MANIFEST (read every added/changed file; deleted files are in diff):\n"
-        prompt += json.dumps(before, ensure_ascii=False) + "\nTRACKED DIFF:\n" + diff
-    if args.feedback:
-        prompt += "\nHOST DISPOSITIONS / FIX REQUEST:\n" + Path(args.feedback).read_text(encoding="utf-8")
-    (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
+        if args.mode == "review":
+            instructions += (
+                "Also report, as a low finding, any actionable plan item (progress step, acceptance "
+                "criterion, verification check, sub-step) that is not its own `- [ ]` checkbox.\n"
+            )
+        if fallback:
+            session_instruction = (
+                "You are resuming the same fallback reviewer session. " if previous else
+                "You are in a fresh fallback reviewer session. "
+            )
+            instructions = (
+                "DEGRADED SAME-PROVIDER FALLBACK: the preferred other-provider reviewer was "
+                "unavailable. " + session_instruction +
+                "You share the builder/planner provider. "
+                "Review adversarially and do not claim cross-provider independence. "
+                "The runner will preserve this limitation in the result.\n" + instructions
+            )
+        prompt = (instructions + f"\nPLAN SHA256: {record['plan_sha256']}\n" if provider == "agy" else
+                  instructions + f"\nPLAN PATH: {plan}\nPLAN SHA256: {record['plan_sha256']}\n")
+        prompt += "<plan>\n" + plan_body.decode("utf-8-sig") + "\n</plan>\n"
+        if repository_context is not None:
+            prompt += "\nREPOSITORY CONTEXT (JSON, paths relative to repository root):\n"
+            prompt += json.dumps(repository_context, ensure_ascii=True) + "\n"
+        if previous:
+            prompt += "Check prior findings against this revision; do not relitigate resolved items without new evidence.\n"
+        if before:
+            save(run_dir / "snapshot.json", before)
+            diff = git(repo, "diff", "--no-ext-diff", "--no-textconv", before["base"], "--").decode("utf-8", errors="replace")
+            prompt += "\nCHANGE MANIFEST (read every added/changed file; deleted files are in diff):\n"
+            prompt += json.dumps(before, ensure_ascii=False) + "\nTRACKED DIFF:\n" + diff
+        if args.feedback:
+            prompt += "\nHOST DISPOSITIONS / FIX REQUEST:\n" + Path(args.feedback).read_text(encoding="utf-8")
+        (run_dir / "prompt.txt").write_text(prompt, encoding="utf-8", newline="")
+    except (RunError, OSError, ValueError, KeyError, subprocess.SubprocessError) as exc:
+        # Preparation errors after the running record exists must not leave it unresolved.
+        record.update(status="failed", error=f"Preparation failed: {exc}",
+                      failure_kind="preparation_failure", fallback_eligible=False)
+        record["elapsed_seconds"] = round(time.time() - record["started_at"], 2)
+        save(run_dir / "result.json", record)
+        print(json.dumps(record, indent=2))
+        return 1
     try:
         if provider == "agy" and len(prompt.encode("utf-8")) > AGY_MAX_PROMPT_BYTES:
             raise RunError("agy prompt exceeds the 1,000,000-byte limit; use another reviewer. No content was truncated.")
@@ -2443,7 +2501,8 @@ def run(args) -> int:
                       fallback_eligible=eligible)
     record["elapsed_seconds"] = round(time.time() - record["started_at"], 2)
     save(run_dir / "result.json", record)
-    print(json.dumps(record, ensure_ascii=False, indent=2))
+    # ASCII escapes: a cp1252/cp949 stdout must not turn a completed round into exit 1 (#31).
+    print(json.dumps(record, indent=2))
     return 0 if record["status"] == "completed" else 1
 
 
@@ -2487,6 +2546,8 @@ def main(argv=None) -> int:
                         help="Allow a CLI version without a recorded canary (Claude panel repo workers, "
                              "agy, dsh); the override is recorded.")
     args = parser.parse_args(argv)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(errors="backslashreplace")  # error text may hold any path (#31)
     try:
         if args.mode == "agy-profile":
             create_agy_profile()

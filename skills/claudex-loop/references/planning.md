@@ -32,7 +32,7 @@ Every list item in Progress Checklist, Acceptance Criteria and Verification (inc
 
 Checkbox state is the canonical progress record. Change `[ ]` to `[x]` immediately after that step's verification succeeds, never in advance. Keep blocked work unchecked with `— BLOCKED: <reason>`; mark removed scope `[x] ... — N/A: <reason>` only when the scope change or a user decision removes it. A resumed session reads the active plan first and continues from the first dependency-ready unchecked item.
 
-Derive proof commands from the repository when possible. Ask only when what counts as success remains unclear. Start the append-only `LOG_FILE` with scope, authorization, and any selected roles, model requests and round limits. Unselected review/build roles may remain unresolved until handoff. Keep run diagnostics outside the checkout.
+Derive proof commands from the repository when possible. Prove the change on the real output of the program that produces its input, not only on hand-written samples. When code is replaced, run the old and new code on the same inputs and compare. Ask only when what counts as success remains unclear. Start the append-only `LOG_FILE` with scope, authorization, and any selected roles, model requests and round limits. Unselected review/build roles may remain unresolved until handoff. Keep run diagnostics outside the checkout.
 
 When the plan is ready, hand off its exact path, log path, verification contract, assumptions and authorization. Stop after planning unless review or implementation is already requested.
 

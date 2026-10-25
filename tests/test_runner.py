@@ -500,6 +500,15 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual((code, record), (1, None))
         self.assertIn("no automatic same-provider fallback", error)
 
+    def test_windows_deepseek_refusal_reports_fallback_ineligibility_first(self):
+        # Ineligibility is platform-independent; the Windows support limit must not mask it.
+        _, _, primary, _ = self.invoke("deepseek", case="quota")
+        with patch.object(runner.sys, "platform", "win32"):
+            code, record, _, error = self.invoke(
+                "deepseek", extra=("--provider", "deepseek", "--fallback-from", str(primary)))
+        self.assertEqual((code, record), (1, None))
+        self.assertIn("no automatic same-provider fallback", error)
+
     def test_role_conflicts_and_self_review_are_rejected_before_launch(self):
         cases = (("review", ("--reviewer", "deepseek", "--provider", "codex")),
                  ("inspect", ("--inspector", "deepseek", "--provider", "codex", "--base", self.base)),

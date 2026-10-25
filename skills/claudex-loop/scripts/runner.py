@@ -2278,14 +2278,16 @@ def run(args) -> int:
     if provider == "deepseek":
         if args.mode not in ("review", "inspect"):
             raise RunError("DeepSeek is available only for plan review and code inspection.")
-        if sys.platform == "win32":
-            raise RunError("DeepSeek review is not validated on Windows.")
+        # Ineligibility is platform-independent; report it before the Windows support limit so
+        # the same refusal wins on every OS and the caller is not misled about eligibility.
         if args.fallback_from:
             if args.host == "deepseek":
                 raise RunError("A DeepSeek host has no automatic same-provider fallback; select "
                                "another explicit non-host reviewer or inspector and record the switch.")
             raise RunError("DeepSeek has no same-provider fallback; rerun with the default "
                            f"{'reviewer' if args.mode == 'review' else 'inspector'} instead.")
+        if sys.platform == "win32":
+            raise RunError("DeepSeek review is not validated on Windows.")
         if args.effort:
             raise RunError("--effort has no verified DeepSeek mapping; omit it.")
         if args.resume:
